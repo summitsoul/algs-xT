@@ -18,6 +18,8 @@ PLACEMENT_PTS = {1: 12, 2: 9, 3: 7, 4: 5, 5: 4, 6: 3, 7: 3,
 BUCKET = 5
 REL_BINS = [0.3, 0.7, 1.0, 1.15, 1.6]
 REL_NAMES = ['圈心', '圈内', '圈内边缘', '圈外贴边', '圈外', '远圈外']
+VEL_WINDOW = 15    # 速度窗口(秒): 判"踩点/守家"看过去15s位移
+STAY_VEL = 400     # 位移 <400 单位 => 算踩点; 否则算出去动/转点
 GLOB = "replay/storm point/*.json"
 OUT = "data/long_table.jsonl"
 META = "data/long_table.meta.json"
@@ -31,16 +33,23 @@ def centroid(pts):
     return (sum(p[0] for p in pts) / len(pts), sum(p[1] for p in pts) / len(pts))
 
 
-def team_anchor(ps):
-    """队伍锚点: 最靠拢两名的质心(忽略单走的第三人)"""
-    n = len(ps)
+def team_anchor(alive, t):
+    """队伍锚点 = '踩点的人'(过去 VEL_WINDOW 内没怎么动)的质心。
+    解决: 2人出去拿人头+1人守家时, 锚点应落在守家的人而非出去的2人。
+    若都在动(整队转点), 退回旧逻辑'最靠拢两名的质心'。"""
+    pos = [pos_at(pl['pts'], pl['ts'], t) for pl in alive]
+    n = len(pos)
     if n == 0:
         return None
     if n == 1:
-        return ps[0]
+        return pos[0]
+    stay = [p for pl, p in zip(alive, pos)
+            if dist(pos_at(pl['pts'], pl['ts'], t - VEL_WINDOW), p) < STAY_VEL]
+    if stay:
+        return centroid(stay)
     if n == 2:
-        return centroid(ps)
-    p0, p1, p2 = ps
+        return centroid(pos)
+    p0, p1, p2 = pos
     d01, d02, d12 = dist(p0, p1), dist(p0, p2), dist(p1, p2)
     if d01 <= d02 and d01 <= d12:
         return centroid([p0, p1])
@@ -140,11 +149,11 @@ def extract_game(path):
         for tid, team in teams.items():
             if team['elim'] < t:
                 continue
-            alive = [pos_at(pl['pts'], pl['ts'], t) for pl in team['players']
+            alive = [pl for pl in team['players']
                      if pl['ts'][0] <= t <= pl['ts'][-1]]
             if not alive:
                 continue
-            a = team_anchor(alive)
+            a = team_anchor(alive, t)
             row = {'game': name, 'region': region, 'team': tid,
                    'team_name': team.get('name', f"T{tid}"),
                    'b': b, 't': t, 'phase': ph, 'rel': dist(a, c) / r,
@@ -158,11 +167,11 @@ def extract_game(path):
                 rows.append(row)
                 continue
 
-            alive_next = [pos_at(pl['pts'], pl['ts'], t_next) for pl in team['players']
+            alive_next = [pl for pl in team['players']
                           if pl['ts'][0] <= t_next <= pl['ts'][-1]]
             if not alive_next:  # 理论上存活队不会发生(elim>=t_next 必有队员覆盖 t_next)
                 continue
-            an = team_anchor(alive_next)
+            an = team_anchor(alive_next, t_next)
             row['died'] = 0
             row['placement_pts'] = 0
             row['next_phase'] = ph_next

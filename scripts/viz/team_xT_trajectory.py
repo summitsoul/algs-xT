@@ -4,7 +4,8 @@
 team_xT_trajectory.py — 一场具体比赛里, 每支队伍的 xT 值随时间的轨迹
 
 对每个时间桶, 取队伍锚点 -> 找最近点位 p -> xT(p, 当前圈) = β_p + φ_m(rel_bin)
-rel>1 (毒里) 记 0 (该点当前无价值)。把吃鸡队伍高亮, 其余 19 队淡色铺底。
+rel>1 (毒里) 软处理: 短暂进出(≤15s)或圈1/圈2 按圈内边缘计值, 圈3+ 持续在毒里才记 0。
+把吃鸡队伍高亮, 其余 19 队淡色铺底。
 同时输出吃鸡队伍的 击杀/排名 分解。
 """
 import json, os, math, bisect
@@ -12,6 +13,10 @@ import numpy as np
 
 REL_BINS = [0.3, 0.7, 1.0, 1.15, 1.6]
 BUCKET = 5
+BRIEF_SEC = 15   # 毒内连续停留 ≤15s 视为"短暂进出", 不强制清零
+SOFT_BIN = 2     # 软处理时按"圈内边缘"(rel_bin=2) 计值
+VEL_WINDOW = 15  # 速度窗口(秒): 判"踩点/守家"看过去15s位移
+STAY_VEL = 400   # 位移 <400 单位 => 算踩点; 否则算出去动/转点
 GAME = "replay/storm point/sp_global_d__g9_29ce1521.json"
 
 phi = json.load(open("data/phi.json", encoding='utf-8'))
@@ -39,15 +44,23 @@ def centroid(pts):
     return (sum(p[0] for p in pts) / len(pts), sum(p[1] for p in pts) / len(pts))
 
 
-def team_anchor(ps):
-    n = len(ps)
+def team_anchor(alive, t):
+    """队伍锚点 = '踩点的人'(过去 VEL_WINDOW 内没怎么动)的质心。
+    解决: 2人出去拿人头+1人守家时, 锚点应落在守家的人而非出去的2人。
+    若都在动(整队转点), 退回旧逻辑'最靠拢两名的质心'。"""
+    pos = [pos_at(pl['pts'], pl['ts'], t) for pl in alive]
+    n = len(pos)
     if n == 0:
         return None
     if n == 1:
-        return ps[0]
+        return pos[0]
+    stay = [p for pl, p in zip(alive, pos)
+            if dist(pos_at(pl['pts'], pl['ts'], t - VEL_WINDOW), p) < STAY_VEL]
+    if stay:
+        return centroid(stay)
     if n == 2:
-        return centroid(ps)
-    p0, p1, p2 = ps
+        return centroid(pos)
+    p0, p1, p2 = pos
     d01, d02, d12 = dist(p0, p1), dist(p0, p2), dist(p1, p2)
     if d01 <= d02 and d01 <= d12:
         return centroid([p0, p1])
@@ -121,32 +134,65 @@ for st in s['teams']:
         teams[tid]['name'] = st.get('teamName', f"T{tid}")
 
 
-def xT_of(x, y, t):
+def xT_of(x, y, t, brief=False):
     """返回 (xT_kill, xT_place, rel)"""
     ph, (cx, cy), r = ring_at(t)
     rel = math.hypot(x - cx, y - cy) / r
-    if rel > 1.0:
-        return 0.0, 0.0, rel
     j = int(np.argmin(np.hypot(pos_arr[:, 0] - x, pos_arr[:, 1] - y)))
-    b = rel_bin(rel)
-    return bk[j] + pk[(ph, b)], bp[j] + pp[(ph, b)], rel
+    if rel <= 1.0:
+        b = rel_bin(rel)
+        return bk[j] + pk[(ph, b)], bp[j] + pp[(ph, b)], rel
+    if brief or ph < 2:     # 短暂进出 或 圈1/圈2: 不强制清零, 按圈内边缘计值
+        return bk[j] + pk[(ph, SOFT_BIN)], bp[j] + pp[(ph, SOFT_BIN)], rel
+    return 0.0, 0.0, rel
 
 
 # 逐队轨迹
+def mark_brief(rels, bucket_sec=BUCKET, brief_sec=BRIEF_SEC):
+    """连续毒内停留 ≤brief_sec 的桶标记为'短暂进出'(不清零)。rels 含 None 表缺桶。"""
+    brief = [False] * len(rels)
+    i = 0
+    while i < len(rels):
+        if rels[i] is not None and rels[i] > 1.0:
+            j = i
+            while j < len(rels) and rels[j] is not None and rels[j] > 1.0:
+                j += 1
+            if (j - i) * bucket_sec <= brief_sec:
+                for k in range(i, j):
+                    brief[k] = True
+            i = j
+        else:
+            i += 1
+    return brief
+
+
 traj = {}
 for tid, team in teams.items():
-    ts = []
     n_buckets = int(dur // BUCKET) + 1
+    # 第一遍: 算每个桶的锚点 + rel, 用来判"短暂进出毒"
+    anchors, rels = [], []
     for b in range(n_buckets):
         t = b * BUCKET
         if team['elim'] < t:
             break
-        alive = [pos_at(pl['pts'], pl['ts'], t) for pl in team['players']
+        alive = [pl for pl in team['players']
                  if pl['ts'][0] <= t <= pl['ts'][-1]]
         if not alive:
+            anchors.append(None); rels.append(None)
             continue  # 队员开局前/复活间隙缺轨迹, 跳过该桶而非截断整条轨迹
-        a = team_anchor(alive)
-        xk, xp, rel = xT_of(a[0], a[1], t)
+        a = team_anchor(alive, t)
+        ph, (cx, cy), r = ring_at(t)
+        anchors.append(a)
+        rels.append(math.hypot(a[0] - cx, a[1] - cy) / r)
+    brief = mark_brief(rels)
+    # 第二遍: 算 xT
+    ts = []
+    for b in range(len(anchors)):
+        a = anchors[b]
+        if a is None:
+            continue
+        t = b * BUCKET
+        xk, xp, rel = xT_of(a[0], a[1], t, brief=brief[b])
         ts.append((t, xk, xp, xk + xp, rel))
     traj[tid] = ts
 
