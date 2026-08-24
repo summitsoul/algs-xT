@@ -1,0 +1,520 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>队伍 xT 轨迹（动态）— __GAME__</title>
+<style>
+:root{--bg:#0d0f13;--panel:#161a22;--ink:#e8eaee;--muted:#98a0ab;--accent:#CCFF33;--kill:#ff5252;--place:#4da3ff;--ring:#22d3ee;--bd:#2a3142;}
+*{box-sizing:border-box;}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;}
+header{padding:12px 18px;border-bottom:1px solid #232834;display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap;}
+header h1{margin:0;font-size:16px;font-weight:600;}
+header .meta{color:var(--muted);font-size:12px;}
+.layout{display:grid;grid-template-columns:1fr 430px;gap:0;min-height:calc(100vh - 48px);}
+@media(max-width:920px){.layout{grid-template-columns:1fr;}}
+.mapcol{display:flex;flex-direction:column;padding:12px;gap:10px;min-width:0;}
+.playbar{display:flex;align-items:center;gap:10px;}
+.playbar button{background:#1c2130;color:var(--ink);border:1px solid var(--bd);border-radius:6px;padding:6px 14px;cursor:pointer;font-size:13px;min-width:76px;}
+.playbar button:hover{border-color:#4a5468;}
+.playbar input[type=range]{flex:1;}
+.playbar .tlabel{font-variant-numeric:tabular-nums;font-size:12px;color:var(--muted);min-width:86px;text-align:right;}
+.playbar select{background:#1c2130;color:var(--ink);border:1px solid var(--bd);border-radius:6px;padding:6px 10px;font-size:13px;cursor:pointer;max-width:190px;}
+.mapwrap{position:relative;flex:1;}
+.mapwrap .map{width:100%;height:100%;max-height:76vh;display:block;border-radius:10px;cursor:grab;touch-action:none;background:#0a0c10;}
+.mapwrap .map:active{cursor:grabbing;}
+.mapui{position:absolute;top:12px;left:12px;display:flex;flex-direction:column;gap:8px;align-items:flex-start;pointer-events:none;}
+.mapui>*{pointer-events:auto;}
+.mapui .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;}
+.seg{display:flex;background:rgba(22,26,34,.94);border:1px solid var(--bd);border-radius:8px;overflow:hidden;}
+.seg button{background:transparent;color:var(--muted);border:0;padding:6px 11px;font-size:12px;cursor:pointer;}
+.seg button.on{background:#1c2130;color:var(--ink);}
+.legend{background:rgba(22,26,34,.94);border:1px solid var(--bd);border-radius:8px;padding:6px 10px;font-size:11px;color:var(--muted);}
+.legend .bar{display:inline-block;width:120px;height:8px;border-radius:4px;vertical-align:middle;margin:0 6px;background:linear-gradient(90deg,hsl(15,92%,26%),hsl(40,95%,50%),hsl(55,95%,62%));}
+.legend .lbl{display:inline-block;margin-left:2px;font-size:10px;}
+.zctrl{position:absolute;right:12px;top:12px;display:flex;flex-direction:column;gap:6px;}
+.zctrl button{width:32px;height:32px;background:rgba(22,26,34,.94);color:var(--ink);border:1px solid var(--bd);border-radius:8px;cursor:pointer;font-size:16px;line-height:1;}
+.zctrl button:hover{border-color:#4a5468;}
+.readout{background:var(--panel);border:1px solid #232834;border-radius:10px;padding:10px 14px;display:flex;gap:18px;align-items:center;flex-wrap:wrap;}
+.readout .team{font-size:14px;font-weight:600;}
+.readout .team .rk{color:var(--muted);font-weight:400;font-size:12px;margin-right:4px;}
+.readout .kv{font-size:12px;color:var(--muted);}
+.readout .kv b{font-variant-numeric:tabular-nums;font-size:14px;}
+.readout .kv.kill b{color:var(--kill);}
+.readout .kv.place b{color:var(--place);}
+.readout .kv.total b{color:var(--accent);}
+.chartcol{background:var(--panel);border-left:1px solid #232834;padding:14px;display:flex;flex-direction:column;gap:14px;overflow-y:auto;}
+.chart{position:relative;}
+.chart h3{margin:0 0 6px;font-size:12px;color:var(--muted);font-weight:600;display:flex;justify-content:space-between;align-items:baseline;}
+.chart svg{width:100%;height:210px;display:block;background:#10131a;border-radius:8px;}
+.tip{position:absolute;pointer-events:none;background:rgba(12,14,19,.95);border:1px solid var(--bd);border-radius:6px;padding:6px 9px;font-size:11px;color:var(--ink);display:none;white-space:nowrap;z-index:9;}
+.tip b{color:var(--accent);}
+.tlist{display:flex;flex-direction:column;gap:1px;max-height:210px;overflow-y:auto;background:#10131a;border-radius:8px;padding:4px;}
+.titem{display:flex;align-items:center;gap:8px;padding:4px 8px;border-radius:6px;cursor:pointer;font-size:12px;color:var(--muted);}
+.titem:hover{background:#1c2130;}
+.titem.on{background:#1c2130;color:var(--ink);}
+.titem .dot{width:9px;height:9px;border-radius:50%;flex:0 0 auto;background:#5a6370;}
+.titem.winner .dot{background:var(--accent);}
+.titem .nm{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.titem .rk{color:var(--muted);font-size:11px;width:22px;text-align:right;}
+.titem .v{font-variant-numeric:tabular-nums;font-size:11px;width:44px;text-align:right;}
+table{width:100%;border-collapse:collapse;font-size:12px;}
+table caption{font-size:12px;color:var(--muted);text-align:left;margin-bottom:6px;font-weight:600;}
+th,td{padding:4px 8px;text-align:left;border-bottom:1px solid #1c2130;}
+th{color:var(--muted);font-weight:500;font-size:11px;}
+td{font-variant-numeric:tabular-nums;}
+tr.winner td{color:var(--accent);}
+td.num{text-align:right;}
+.hint{font-size:11px;color:var(--muted);line-height:1.5;margin:0;}
+</style></head><body>
+<header>
+  <h1>队伍 xT 轨迹（动态）— __GAME__（冠军局）</h1>
+  <div class="meta">20 队 · xT = β_p(点位) + φ(圈相对) · 毒区清零 · 吃鸡 <b style="color:#CCFF33">__WINNER__</b> · 滚轮缩放 / 拖拽平移</div>
+</header>
+<div class="layout">
+  <div class="mapcol">
+    <div class="playbar">
+      <select id="teamSelect" title="选择队伍"></select>
+      <button id="play">▶ 播放</button>
+      <input type="range" id="slider" min="0" max="__DUR__" value="0" step="1">
+      <span class="tlabel" id="tlabel">t = 0s</span>
+    </div>
+    <div class="mapwrap">
+      <svg class="map" id="map" viewBox="0 0 4096 4096" preserveAspectRatio="xMidYMid meet">
+        <g id="world">
+          <image width="4096" height="4096" href="data:image/jpeg;base64,__MAP__"></image>
+          <g id="rings"></g>
+          <g id="points"></g>
+          <g id="paths"></g>
+          <g id="spots"></g>
+        </g>
+      </svg>
+      <div class="mapui">
+        <div class="row seg" id="metricSeg">
+          <button data-m="total" class="on">合计</button>
+          <button data-m="kill">击杀</button>
+          <button data-m="place">排名</button>
+        </div>
+        <div class="row seg" id="phaseSeg"></div>
+        <div class="row">
+          <label class="legend"><input type="checkbox" id="showAll"> 显示 20 队位置</label>
+        </div>
+        <div class="legend"><span class="bar"></span><span class="lbl">点位 xT 低→高</span></div>
+      </div>
+      <div class="zctrl">
+        <button id="zin" title="放大">+</button>
+        <button id="zout" title="缩小">−</button>
+        <button id="zreset" title="重置视图">⤢</button>
+      </div>
+    </div>
+    <div class="readout" id="readout">
+      <span class="team" id="roTeam"></span>
+      <span class="kv kill">击杀 xT_kill <b id="roKill">0</b></span>
+      <span class="kv place">排名 xT_place <b id="roPlace">0</b></span>
+      <span class="kv total">合计 xT <b id="roTotal">0</b></span>
+      <span class="kv">圈 <b id="roPhase">0</b> · rel <b id="roRel">—</b></span>
+    </div>
+    <p class="hint">▶ 播放后：圈随游戏时间实时收缩漂移，点位按「当前圈」实时重着色 xT；亮黄线 = 选中队已走过的路，淡灰线 = 其他队伍路线。用顶部下拉或右栏队伍切换焦点队，下方实时显示该队击杀/排名/合计 xT。点击「圈X」跳转到该圈完成时刻。</p>
+  </div>
+  <div class="chartcol">
+    <div class="chart" id="ch1">
+      <h3>20 队点位 xT 轨迹 <span class="sub">竖虚线 = 圈刷新 · 悬停查看</span></h3>
+      <svg id="c1"></svg>
+      <div class="tip" id="tip1"></div>
+    </div>
+    <div class="chart">
+      <h3 id="c2title">吃鸡队 <b style="color:#CCFF33">__WINNER__</b> — 击杀 vs 排名 分解</h3>
+      <svg id="c2"></svg>
+    </div>
+    <div>
+      <h3 style="font-size:12px;color:var(--muted);margin:0 0 4px;">队伍列表（点击高亮轨迹 + 设为焦点队）</h3>
+      <div class="tlist" id="tlist"></div>
+    </div>
+    <table id="ltable"><caption>后期（圈3+）各队平均点位 xT</caption><thead><tr><th>#</th><th>队伍</th><th class="num">后期均 xT</th><th class="num">峰值</th></tr></thead><tbody></tbody></table>
+  </div>
+</div>
+<script>
+const DATA = __DATA__;
+const YMAX = __YMAX__;
+const dur = DATA.dur;
+const RATIO = 24.93;
+const NS = 'http://www.w3.org/2000/svg';
+const sx = x => x/RATIO + 2048, sy = y => -y/RATIO + 2048;
+const WIN = DATA.winner;
+const RB = DATA.relbins;
+const PK = DATA.phi.kill, PP = DATA.phi.place;
+const TEAMS = {}; DATA.teams.forEach(t=>TEAMS[t.name]=t);
+let curMetric = 'total', focus = WIN, showAll = false;
+
+function relbin(rel){ for(let i=0;i<RB.length;i++) if(rel<RB[i]) return i; return RB.length; }
+function ringAt(t){
+  const R = DATA.rings;
+  for(let i=R.length-1;i>=0;i--){ const st=R[i]; if(t>=st.t0){
+    const p = Math.min(1,(t-st.t0)/Math.max(st.t1-st.t0,1e-6));
+    return {phase:i, cx:st.c0[0]+(st.c1[0]-st.c0[0])*p, cy:st.c0[1]+(st.c1[1]-st.c0[1])*p, r:st.r0+(st.r1-st.r0)*p};
+  }}
+  const st=R[0]; return {phase:0, cx:st.c0[0], cy:st.c0[1], r:st.r0};
+}
+function pointVal(i, metric, rng){
+  const rel = Math.hypot(DATA.points.x[i]-rng.cx, DATA.points.y[i]-rng.cy)/rng.r;
+  if(rel>1) return 0;
+  const key = rng.phase+','+relbin(rel);
+  if(metric==='kill') return DATA.points.bk[i] + PK[key];
+  if(metric==='place') return DATA.points.bp[i] + PP[key];
+  return DATA.points.bk[i]+DATA.points.bp[i] + PK[key] + PP[key];
+}
+function heat(v, vmax, hue){
+  if(v<=0) return '#2e313a';
+  const t = Math.min(1, v/vmax);
+  const h = hue[0] + (hue[1]-hue[0])*t, l = 24 + 42*t;
+  return `hsl(${h}, 90%, ${l}%)`;
+}
+const HUE = {total:[14,55], kill:[0,12], place:[205,222]};
+function posAt(path, t){
+  if(!path.length) return null;
+  if(t <= path[0][0]) return path[0];
+  if(t >= path[path.length-1][0]) return path[path.length-1];
+  let lo=0, hi=path.length-1;
+  while(lo<hi-1){ const m=(lo+hi)>>1; if(path[m][0]<=t) lo=m; else hi=m; }
+  const a=path[lo], b=path[hi], f=(t-a[0])/(b[0]-a[0]);
+  return [t, a[1]+f*(b[1]-a[1]), a[2]+f*(b[2]-a[2])];
+}
+function seriesAt(series, t){
+  if(!series.length) return null;
+  let best=series[0], bd=1e18;
+  for(const r of series){ const dd=Math.abs(r[0]-t); if(dd<bd){bd=dd;best=r;} }
+  return best;
+}
+
+// ---- 地图构建 ----
+const mapEl = document.getElementById('map');
+const world = document.getElementById('world');
+const ringsG = document.getElementById('rings');
+const pointsG = document.getElementById('points');
+const pathsG = document.getElementById('paths');
+const spotsG = document.getElementById('spots');
+
+// 完成圈(静态) + 当前圈(动态高亮)
+const ringEls = [];
+DATA.rings.forEach(r=>{
+  const c = document.createElementNS(NS,'circle');
+  c.setAttribute('cx', sx(r.c1[0])); c.setAttribute('cy', sy(r.c1[1]));
+  c.setAttribute('r', r.r1/RATIO); c.setAttribute('fill','none');
+  c.setAttribute('stroke','#7c8bb0'); c.setAttribute('stroke-width','1.6');
+  c.setAttribute('stroke-dasharray','7 5'); c.setAttribute('opacity','0.8');
+  ringsG.appendChild(c); ringEls.push(c);
+});
+const curRing = document.createElementNS(NS,'circle');
+curRing.setAttribute('fill','none'); curRing.setAttribute('stroke','#22d3ee');
+curRing.setAttribute('stroke-width','2.5');
+ringsG.appendChild(curRing);
+
+// 点位(预建 451, 逐帧只改属性)
+const pointEls = [];
+for(let i=0;i<DATA.points.x.length;i++){
+  const c = document.createElementNS(NS,'circle');
+  c.setAttribute('cx', sx(DATA.points.x[i])); c.setAttribute('cy', sy(DATA.points.y[i]));
+  pointsG.appendChild(c); pointEls.push(c);
+}
+function updatePoints(rng){
+  const vmax = DATA.vmax[curMetric];
+  for(let i=0;i<pointEls.length;i++){
+    const v = pointVal(i, curMetric, rng);
+    pointEls[i].setAttribute('r', v>0? 5.2:2.2);
+    pointEls[i].setAttribute('fill', heat(v, vmax, HUE[curMetric]));
+    pointEls[i].setAttribute('opacity', v>0? '0.92':'0.35');
+  }
+}
+
+// 所有队伍路线(淡灰底) + 焦点队 full(亮暗) + cur(亮) + 标记
+const faintPaths = {};
+DATA.teams.forEach(tm=>{
+  const p = document.createElementNS(NS,'path');
+  p.setAttribute('fill','none'); p.setAttribute('stroke','#5a6370');
+  p.setAttribute('stroke-width','1'); p.setAttribute('opacity','0.13');
+  let d=''; tm.path.forEach((pt,i)=>{ d += (i?'L':'M') + sx(pt[1]).toFixed(1) + ' ' + sy(pt[2]).toFixed(1); });
+  p.setAttribute('d', d); pathsG.appendChild(p); faintPaths[tm.name]=p;
+});
+const fullPath = document.createElementNS(NS,'path');
+fullPath.setAttribute('fill','none'); fullPath.setAttribute('stroke','#CCFF33');
+fullPath.setAttribute('stroke-width','2'); fullPath.setAttribute('opacity','0.35');
+pathsG.appendChild(fullPath);
+const curPath = document.createElementNS(NS,'path');
+curPath.setAttribute('fill','none'); curPath.setAttribute('stroke','#CCFF33');
+curPath.setAttribute('stroke-width','3.5'); curPath.setAttribute('stroke-linejoin','round');
+pathsG.appendChild(curPath);
+const focusMark = document.createElementNS(NS,'circle');
+focusMark.setAttribute('fill','none'); focusMark.setAttribute('stroke','#CCFF33');
+focusMark.setAttribute('stroke-width','3'); focusMark.setAttribute('r','11');
+spotsG.appendChild(focusMark);
+
+// 20 队位置圆点(预建)
+const spotEls = {};
+DATA.teams.forEach(tm=>{
+  const c = document.createElementNS(NS,'circle');
+  c.setAttribute('r','4.5'); c.setAttribute('stroke','#0d0f13'); c.setAttribute('stroke-width','1');
+  c.setAttribute('fill', tm.name===WIN? '#CCFF33':'#7d8799');
+  c.setAttribute('display','none');
+  spotsG.appendChild(c); spotEls[tm.name]=c;
+});
+
+function setFocusPath(name){
+  const p = TEAMS[name].path;
+  let d = ''; p.forEach((pt,i)=>{ d += (i?'L':'M') + sx(pt[1]).toFixed(1) + ' ' + sy(pt[2]).toFixed(1); });
+  fullPath.setAttribute('d', d);
+  renderTransfers(name);
+}
+
+// 关键转移标注层
+const transfersG = document.createElementNS(NS,'g');
+world.appendChild(transfersG);
+const T_XT = 2.0, D_MOVE = 500, MAX_MARKS = 8;
+function detectTransfers(name){
+  const tm = TEAMS[name], evs = [];
+  for(let i=1;i<tm.series.length;i++){
+    const t = tm.series[i][0];
+    if(t < 60) continue;  // 跳过开局跳伞落地乱动
+    const dxt = tm.series[i][3] - tm.series[i-1][3];
+    const a = tm.path[i-1], b = tm.path[i];
+    const ddist = Math.hypot(b[1]-a[1], b[2]-a[2]);
+    if(Math.abs(dxt) >= T_XT && ddist >= D_MOVE){
+      evs.push({x:b[1], y:b[2], xT:tm.series[i][3], dir:dxt>0?1:-1, mag:Math.abs(dxt)});
+    }
+  }
+  evs.sort((p,q)=>q.mag-p.mag);
+  return evs.slice(0, MAX_MARKS);
+}
+function renderTransfers(name){
+  transfersG.innerHTML='';
+  detectTransfers(name).forEach(ev=>{
+    const g = document.createElementNS(NS,'g');
+    const c = document.createElementNS(NS,'circle');
+    c.setAttribute('cx', sx(ev.x)); c.setAttribute('cy', sy(ev.y));
+    c.setAttribute('r','13'); c.setAttribute('fill', ev.dir>0? '#CCFF33':'#ff5252');
+    c.setAttribute('fill-opacity','0.85'); c.setAttribute('stroke','#0d0f13'); c.setAttribute('stroke-width','2');
+    g.appendChild(c);
+    const t = document.createElementNS(NS,'text');
+    t.setAttribute('x', sx(ev.x)+20); t.setAttribute('y', sy(ev.y)+14);
+    t.setAttribute('fill', ev.dir>0? '#CCFF33':'#ff5252');
+    t.setAttribute('font-size','52'); t.setAttribute('font-weight','700');
+    t.setAttribute('stroke','#0d0f13'); t.setAttribute('stroke-width','6');
+    t.setAttribute('paint-order','stroke'); t.setAttribute('stroke-linejoin','round');
+    t.textContent = (ev.dir>0?'+':'') + ev.xT.toFixed(1);
+    g.appendChild(t);
+    transfersG.appendChild(g);
+  });
+}
+function updatePath(t){
+  const p = TEAMS[focus].path;
+  let d=''; for(const pt of p){ if(pt[0]>t) break; d += (d?'L':'M') + sx(pt[1]).toFixed(1) + ' ' + sy(pt[2]).toFixed(1); }
+  curPath.setAttribute('d', d);
+  const at = posAt(p, t);
+  if(at){ focusMark.setAttribute('cx', sx(at[1])); focusMark.setAttribute('cy', sy(at[2])); }
+}
+function updateSpots(t){
+  DATA.teams.forEach(tm=>{
+    const c = spotEls[tm.name];
+    const at = posAt(tm.path, t);
+    const show = showAll || tm.name===focus;
+    if(!at || !show){ c.setAttribute('display','none'); return; }
+    c.setAttribute('display',''); c.setAttribute('cx', sx(at[1])); c.setAttribute('cy', sy(at[2]));
+  });
+}
+
+// ---- 缩放 / 平移 ----
+let view = {k:1, tx:0, ty:0};
+function applyV(){ world.setAttribute('transform', `translate(${view.tx} ${view.ty}) scale(${view.k})`); }
+function viewPt(e){
+  const pt = mapEl.createSVGPoint(); pt.x = e.clientX; pt.y = e.clientY;
+  return pt.matrixTransform(mapEl.getScreenCTM().inverse());
+}
+function zoomAt(f, v){
+  const ns = Math.min(8, Math.max(1, view.k*f));
+  const wx = (v.x - view.tx)/view.k, wy = (v.y - view.ty)/view.k;
+  view.k = ns; view.tx = v.x - wx*ns; view.ty = v.y - wy*ns; applyV();
+}
+mapEl.addEventListener('wheel', e=>{ e.preventDefault(); zoomAt(e.deltaY<0?1.25:0.8, viewPt(e)); }, {passive:false});
+let drag=false, last=null;
+mapEl.addEventListener('mousedown', e=>{ drag=true; last=viewPt(e); });
+window.addEventListener('mousemove', e=>{ if(!drag) return; const v=viewPt(e); view.tx += v.x-last.x; view.ty += v.y-last.y; last=v; applyV(); });
+window.addEventListener('mouseup', ()=>{ drag=false; });
+document.getElementById('zin').onclick = ()=> zoomAt(1.5, {x:2048, y:2048});
+document.getElementById('zout').onclick = ()=> zoomAt(1/1.5, {x:2048, y:2048});
+document.getElementById('zreset').onclick = ()=>{ view={k:1,tx:0,ty:0}; applyV(); };
+
+// ---- 图表 ----
+function drawC1(){
+  const svg = document.getElementById('c1'); const W = svg.clientWidth||560, H=210;
+  svg.setAttribute('viewBox', `0 0 ${W} ${H}`); svg.innerHTML='';
+  const g = document.createElementNS(NS,'g'); svg.appendChild(g);
+  DATA.rings.forEach(r=>{ if(r.t1<=dur){
+    const l=document.createElementNS(NS,'line');
+    l.setAttribute('x1',r.t1/dur*W); l.setAttribute('x2',r.t1/dur*W);
+    l.setAttribute('y1',0); l.setAttribute('y2',H); l.setAttribute('stroke','#22d3ee');
+    l.setAttribute('stroke-width','0.7'); l.setAttribute('opacity','0.3'); g.appendChild(l);
+  }});
+  DATA.teams.forEach(tm=>{
+    const p=document.createElementNS(NS,'polyline');
+    p.setAttribute('points', tm.series.map(r=>`${(r[0]/dur*W).toFixed(1)},${(H-r[3]/YMAX*H).toFixed(1)}`).join(' '));
+    p.setAttribute('fill','none');
+    p.setAttribute('stroke','#4a5262');
+    p.setAttribute('stroke-width','1');
+    p.setAttribute('opacity','0.55');
+    p.setAttribute('data-name', tm.name); g.appendChild(p);
+  });
+  const nl=document.createElementNS(NS,'line');
+  nl.setAttribute('id','now1'); nl.setAttribute('y1',0); nl.setAttribute('y2',H);
+  nl.setAttribute('stroke','#e8eaee'); nl.setAttribute('stroke-width','1'); nl.setAttribute('opacity','0.5');
+  g.appendChild(nl);
+  const dot=document.createElementNS(NS,'circle');
+  dot.setAttribute('id','c1dot'); dot.setAttribute('r','4.5'); dot.setAttribute('fill','#CCFF33');
+  dot.setAttribute('stroke','#0d0f13'); dot.setAttribute('stroke-width','1.5'); g.appendChild(dot);
+  svg.onmousemove = e=>{
+    const rect=svg.getBoundingClientRect(); const t=(e.clientX-rect.left)/rect.width*dur;
+    let best=null,bd=1e18; DATA.teams.forEach(tm=>tm.series.forEach(r=>{ const dd=Math.abs(r[0]-t); if(dd<bd){bd=dd;best={tm,r};} }));
+    if(best){ const tip=document.getElementById('tip1');
+      tip.style.display='block'; tip.style.left=(e.clientX-rect.left+12)+'px'; tip.style.top=(e.clientY-rect.top-8)+'px';
+      tip.innerHTML=`<b>${best.tm.name}</b> #${best.tm.rank} · t=${best.r[0]}s<br>击杀 ${best.r[1].toFixed(2)} · 排名 ${best.r[2].toFixed(2)} · 合计 <b>${best.r[3].toFixed(2)}</b>`;
+    }
+  };
+  svg.onmouseleave = ()=>{ document.getElementById('tip1').style.display='none'; };
+}
+function drawC2(name){
+  const svg = document.getElementById('c2'); const W = svg.clientWidth||560, H=210;
+  svg.setAttribute('viewBox', `0 0 ${W} ${H}`); svg.innerHTML='';
+  const g = document.createElementNS(NS,'g'); svg.appendChild(g);
+  DATA.rings.forEach(r=>{ if(r.t1<=dur){
+    const l=document.createElementNS(NS,'line');
+    l.setAttribute('x1',r.t1/dur*W); l.setAttribute('x2',r.t1/dur*W);
+    l.setAttribute('y1',0); l.setAttribute('y2',H); l.setAttribute('stroke','#22d3ee');
+    l.setAttribute('stroke-width','0.7'); l.setAttribute('opacity','0.3'); g.appendChild(l);
+  }});
+  const tm = TEAMS[name] || TEAMS[WIN];
+  const lines = [[1,'#ff5252',2,''], [2,'#4da3ff',2,''], [3,'#888',1.3,'3 3']];
+  tm.series.forEach(r=>{
+    lines[0][3] += (lines[0][3]?' ':'') + `${(r[0]/dur*W).toFixed(1)},${(H-r[1]/YMAX*H).toFixed(1)}`;
+    lines[1][3] += (lines[1][3]?' ':'') + `${(r[0]/dur*W).toFixed(1)},${(H-r[2]/YMAX*H).toFixed(1)}`;
+    lines[2][3] += (lines[2][3]?' ':'') + `${(r[0]/dur*W).toFixed(1)},${(H-r[3]/YMAX*H).toFixed(1)}`;
+  });
+  lines.forEach(l=>{ const p=document.createElementNS(NS,'polyline');
+    p.setAttribute('points',l[3]); p.setAttribute('fill','none'); p.setAttribute('stroke',l[1]); p.setAttribute('stroke-width',l[2]);
+    if(l[1]==='#888') p.setAttribute('stroke-dasharray','3 3'); g.appendChild(p); });
+  const nl=document.createElementNS(NS,'line');
+  nl.setAttribute('id','now2'); nl.setAttribute('y1',0); nl.setAttribute('y2',H);
+  nl.setAttribute('stroke','#e8eaee'); nl.setAttribute('stroke-width','1'); nl.setAttribute('opacity','0.5');
+  g.appendChild(nl);
+  [['击杀 xT_kill','#ff5252'],['排名 xT_place','#4da3ff'],['合计','#888']].forEach((x,i)=>{
+    const t=document.createElementNS(NS,'text'); t.setAttribute('x',8); t.setAttribute('y',14+i*14);
+    t.setAttribute('fill',x[1]); t.setAttribute('font-size','11'); t.textContent=x[0]; g.appendChild(t);
+  });
+}
+function setNow(t){
+  [['c1','now1'],['c2','now2']].forEach(([svgId,lineId])=>{
+    const svg=document.getElementById(svgId); const W=svg.clientWidth||560;
+    const nl=document.getElementById(lineId); if(nl) nl.setAttribute('x1', t/dur*W), nl.setAttribute('x2', t/dur*W);
+  });
+}
+
+// ---- 队伍列表 + 表 ----
+function buildList(){
+  const el = document.getElementById('tlist'); el.innerHTML='';
+  const sel = document.getElementById('teamSelect'); sel.innerHTML='';
+  DATA.teams.forEach(tm=>{
+    const late = DATA.late.find(l=>l.name===tm.name);
+    const div=document.createElement('div');
+    div.className='titem'+(tm.name===WIN?' winner':'');
+    div.dataset.name = tm.name;
+    div.innerHTML=`<span class="dot"></span><span class="rk">#${tm.rank}</span><span class="nm">${tm.name}</span><span class="v">${late? late.mean.toFixed(2):'—'}</span>`;
+    div.onclick=()=>selectTeam(tm.name);
+    el.appendChild(div);
+    const op=document.createElement('option'); op.value=tm.name; op.textContent=`#${tm.rank} ${tm.name}`; sel.appendChild(op);
+  });
+}
+function selectTeam(name){
+  focus = name;
+  document.getElementById('teamSelect').value = name;
+  document.querySelectorAll('.titem').forEach(x=>x.classList.toggle('on', x.dataset.name===name));
+  setFocusPath(name);
+  highlightTeam(name);
+  document.getElementById('c2title').innerHTML = `${name===WIN?'吃鸡队':'选中队'} <b style="color:#CCFF33">${name}</b> — 击杀 vs 排名 分解`;
+  drawC2(name);
+  update(curT);
+}
+function highlightTeam(name){
+  const svg=document.getElementById('c1');
+  svg.querySelectorAll('polyline').forEach(p=>{
+    const n=p.getAttribute('data-name');
+    const on = n===name;
+    p.setAttribute('stroke', on? '#CCFF33' : '#4a5262');
+    p.setAttribute('stroke-width', on? '3' : '1');
+    p.setAttribute('opacity', on? '1' : '0.13');
+  });
+}
+function buildTable(){
+  const tb=document.querySelector('#ltable tbody'); tb.innerHTML='';
+  DATA.late.forEach(l=>{
+    const tr=document.createElement('tr'); if(l.name===WIN) tr.className='winner';
+    tr.innerHTML=`<td>#${l.rank}</td><td>${l.name}</td><td class="num">${l.mean.toFixed(2)}</td><td class="num">${l.peak.toFixed(2)}</td>`;
+    tb.appendChild(tr);
+  });
+}
+
+// ---- 播放 / 时间轴 ----
+let curT = 0, playing=false, timer=null;
+const slider = document.getElementById('slider');
+const playBtn = document.getElementById('play');
+const SPEED = 5;
+function tick(){
+  curT = Math.min(dur, curT + SPEED);
+  if(curT>=dur){ curT=dur; stop(); }
+  slider.value = curT; update(curT);
+}
+function start(){ if(playing) return; playing=true; playBtn.textContent='⏸ 暂停'; timer=setInterval(tick, 50); }
+function stop(){ playing=false; clearInterval(timer); playBtn.textContent='▶ 播放'; }
+playBtn.onclick = ()=>{ if(playing) stop(); else { if(curT>=dur) curT=0; start(); } };
+slider.oninput = ()=>{ curT = parseInt(slider.value); update(curT); };
+
+function update(t){
+  curT = t;
+  const rng = ringAt(t);
+  curRing.setAttribute('cx', sx(rng.cx)); curRing.setAttribute('cy', sy(rng.cy)); curRing.setAttribute('r', rng.r/RATIO);
+  ringEls.forEach((c,i)=>{ c.setAttribute('stroke', i===rng.phase? '#22d3ee':'#7c8bb0'); c.setAttribute('opacity', i===rng.phase? '0.95':'0.8'); });
+  updatePoints(rng);
+  updatePath(t);
+  updateSpots(t);
+  setNow(t);
+  document.getElementById('tlabel').textContent = 't = '+t+'s';
+  // 读数
+  const ft = TEAMS[focus];
+  const s = seriesAt(ft.series, t);
+  document.getElementById('roTeam').innerHTML = `#${ft.rank} ${focus}`;
+  if(s){
+    document.getElementById('roKill').textContent = s[1].toFixed(2);
+    document.getElementById('roPlace').textContent = s[2].toFixed(2);
+    document.getElementById('roTotal').textContent = s[3].toFixed(2);
+    const dot=document.getElementById('c1dot');
+    if(dot){ const W=document.getElementById('c1').clientWidth||560, H=210;
+      dot.setAttribute('cx', (s[0]/dur*W)); dot.setAttribute('cy', (H - s[3]/YMAX*H)); }
+  }
+  document.getElementById('roPhase').textContent = rng.phase + 1;
+  const at = posAt(ft.path, t);
+  document.getElementById('roRel').textContent = at? (Math.hypot(at[1]-rng.cx, at[2]-rng.cy)/rng.r).toFixed(2) : '—';
+}
+
+// ---- 初始化 ----
+document.getElementById('metricSeg').addEventListener('click', e=>{
+  const b=e.target.closest('button'); if(!b) return; curMetric=b.dataset.m;
+  document.querySelectorAll('#metricSeg button').forEach(x=>x.classList.toggle('on',x===b));
+  updatePoints(ringAt(curT));
+});
+document.getElementById('phaseSeg').innerHTML = DATA.rings.map((r,i)=>`<button data-i="${i}">圈${i+1}</button>`).join('');
+document.getElementById('phaseSeg').addEventListener('click', e=>{
+  const b=e.target.closest('button'); if(!b) return;
+  curT = Math.round(DATA.rings[+b.dataset.i].t1); slider.value = curT; update(curT);
+});
+document.getElementById('showAll').addEventListener('change', e=>{ showAll = e.target.checked; updateSpots(curT); });
+
+drawC1(); buildList(); buildTable();
+document.getElementById('teamSelect').addEventListener('change', e=>selectTeam(e.target.value));
+selectTeam(WIN);
+window.addEventListener('resize', ()=>{ drawC1(); drawC2(focus); highlightTeam(focus); update(curT); });
+</script>
+</body></html>

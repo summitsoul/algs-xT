@@ -1,0 +1,35 @@
+{
+  "map": "Storm Point",
+  "season": "Year 6 Split 2 Pro League",
+  "source": "apexlegendsstatus.com/algs (Overview 页面枚举)",
+  "generatedAt": "2026-08-24",
+  "games": [
+    {"region": "APAC_S", "day": 1, "game": 1, "gid": "1343169cac63d564b1df4b80e16f4446"},
+    {"region": "APAC_S", "day": 1, "game": 2, "gid": "ef4afd3fb27cc9b9f13412e315b70bb9"},
+    {"region": "APAC_S", "day": 1, "game": 3, "gid": "c01ded05124ba09b086cb43608e1b1bb"},
+    {"region": "APAC_S", "day": 2, "game": 4, "gid": "5475119ffb36659eb2d96e307d4c344c"},
+    {"region": "APAC_S", "day": 2, "game": 5, "gid": "53e58cdf119ae7df219542c43edba8e3"},
+    {"region": "APAC_S", "day": 2, "game": 6, "gid": "99c6fb4194f5d70ed78b03f481fe508f"},
+
+    {"region": "APAC_N", "day": 1, "game": 1, "gid": "033dce2f43010ee9159f1950b2fce060"},
+    {"region": "APAC_N", "day": 1, "game": 2, "gid": "c34c13b192bdaca4aceb3a964a0a0947"},
+    {"region": "APAC_N", "day": 1, "game": 3, "gid": "c57a797e068cc19666a8b7d9d7833165"},
+    {"region": "APAC_N", "day": 2, "game": 4, "gid": "e09209f519f2c87bb49d0f335df92889"},
+    {"region": "APAC_N", "day": 2, "game": 5, "gid": "e4b20efc5a74e7c24d98493ebe9d61c9"},
+    {"region": "APAC_N", "day": 2, "game": 6, "gid": "97927d2cef897fe2d790ae1475b51d83"},
+
+    {"region": "EMEA", "day": 1, "game": 1, "gid": "944526a0cad499d09bf33b8e210b6d42"},
+    {"region": "EMEA", "day": 1, "game": 2, "gid": "f6c0792f6e2f3a3e6c0931a421b68430"},
+    {"region": "EMEA", "day": 1, "game": 3, "gid": "c65c91a8c32e9fd9cc677157840bc42f"},
+    {"region": "EMEA", "day": 2, "game": 4, "gid": "a61a4c59e134ca22edef46ff105ca1d3"},
+    {"region": "EMEA", "day": 2, "game": 5, "gid": "05aae227c7d364e2090d3fdf4c8e129e"},
+    {"region": "EMEA", "day": 2, "game": 6, "gid": "15c40892505516adeeb3d850d644ec82"},
+
+    {"region": "NA", "day": 1, "game": 1, "gid": "7de5c512d753514e12857158ebde732f"},
+    {"region": "NA", "day": 1, "game": 2, "gid": "6b84320625600800954f2e508a3e7d67"},
+    {"region": "NA", "day": 1, "game": 3, "gid": "b74887d1e045fb32a2d51bb4a3b99d04"},
+    {"region": "NA", "day": 2, "game": 4, "gid": "ee9b39bc7a7af7da7758e9025bcb18d9"},
+    {"region": "NA", "day": 2, "game": 5, "gid": "0f5528184bb0e9b24f29e8584f77a116"},
+    {"region": "NA", "day": 2, "game": 6, "gid": "3176c64ffec7aaf46b05a1bbae907a57"}
+  ]
+}
