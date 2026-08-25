@@ -3,14 +3,15 @@
 """
 demo_xT_points_html.py — 点位 xT 单场演示 (自包含 HTML)
 
-用新模型: xT(点位p, 第m圈) = β_p + φ_m(rel_bin)  当 rel<=1 (圈内)
-                          = 0                       当 rel>1 (毒里清零)
+用定稿模型: xT(点位p, 第m圈) = 累计击杀(斜率积分) + max(0, β_p_place + φ_place(rel_bin))
+  kill = 该点该圈每秒击杀数(斜率), 沿轨迹积分得累计击杀(单调递增, 换点只改斜率);
+  place = 非折现(γ=1.0) 非负, 毒里不硬记 0
 
-展示 (对照 make_demo.py 的交互, 但价值场换成"点位 xT"):
-  - 地图 + 6 圈型 + 451 个点位 (随圈实时着色: 圈内红=高 xT, 灰=毒清零)
-  - 点位着色两种模式切换: "随圈 xT" / "基值 β_p"
+展示 (对照 make_demo.py 的交互, 价值场换成"点位 xT"):
+  - 地图 + 6 圈型 + 451 个点位 (随圈实时着色: 红=高 xT)
+  - 点位着色两种模式切换: "随圈 xT" / "排名偏离 β_place"
   - 全部队伍路线 + 吃鸡队高亮 + 吃鸡队击杀点
-  - 全员 xT 曲线 (随时间, 随圈刷新变化)
+  - 全员 xT 曲线 (累计击杀 + 当前排名潜力, 击杀分量单调递增)
   - 时间滑块/播放 + 缩放平移 + 图例悬停高亮
 """
 import json, math, bisect, io, base64
@@ -22,7 +23,8 @@ REL_BINS = [0.3, 0.7, 1.0, 1.15, 1.6]
 REL_NAMES = ['圈心', '圈内', '圈内边缘', '圈外贴边', '圈外', '远圈外']
 GAME = "replay/storm point/sp_na_d__g7_5542abdb.json"
 MAP_PNG = "map/storm point.png"
-BETA_NPY = "data/points_beta.npy"
+BK_NPY = "data/beta_kill.npy"     # 击杀斜率 = 每秒击杀数(按圈, 2D)
+BP_NPY = "data/beta_place.npy"    # 排名偏离
 POS_NPY = "data/points_pos.npy"
 PHI_JSON = "data/phi.json"
 OUT_HTML = "output/demo_xT_points.html"
@@ -81,13 +83,36 @@ def rel_bin(rel):
     return len(REL_BINS)
 
 
+MIN_ZONE_R = 500.0  # 新圈(安全区)半径 < 此值视为无安全区(最后缩到一点), rel 退回毒环、β_p 不衰减
+R0 = 31000.0        # 圈1 新圈(安全区)半径, w_stage 归一化基准
+
+
+def zone_rel(a, c1, r1, c_ring, r_ring):
+    if r1 >= MIN_ZONE_R:
+        return dist(a, c1) / r1
+    return dist(a, c_ring) / max(r_ring, 1.0)
+
+
+def zone_w(rel, r1):
+    if r1 < MIN_ZONE_R:
+        return 1.0
+    return max(0.0, min(1.0, (1.6 - rel) / 0.6))
+
+
+def stage_w(r1):
+    """β_p 圈阶段权重: 圈越大(越早)点位固有价值兑现越低, 缩到决赛圈才全额。
+    w_stage = 1 - r1/R0 → 圈1=0, 圈2≈0.52, 圈3≈0.74, 圈4≈0.87, 圈5≈0.94, 圈6≈1.0。"""
+    return max(0.0, 1.0 - r1 / R0)
+
+
 def main():
     # ---- 模型产物 ----
-    beta = np.load(BETA_NPY)
+    bk = np.load(BK_NPY)          # (NP, 6) 击杀斜率按圈 (击杀/秒)
+    bp = np.load(BP_NPY)          # (NP,) 排名偏离
     pos_arr = np.load(POS_NPY)
-    phij = json.load(open(PHI_JSON, encoding='utf-8'))['phi']
+    phij = json.load(open(PHI_JSON, encoding='utf-8'))['phi_place']
     PHI = [[phij.get(f"{ph},{rb}", 0.0) for rb in range(6)] for ph in range(6)]
-    NP = len(beta)
+    NP = len(bp)
 
     d = json.load(open(GAME, encoding='utf-8'))
     s = d['summary']
@@ -158,27 +183,28 @@ def main():
         color = mt.get('color') or FALLBACK[i % len(FALLBACK)]
         placement = mt.get('placement', 20)
         tpath = []
+        xk_acc = 0.0
         for b in range(int(dur // BUCKET) + 1):
             tt = b * BUCKET
             if tt > elim:
                 break
             ph, c, r = ring_at(tt)
+            c1, r1 = stages[ph]['c1'], stages[ph]['r1']  # 新圈(安全区)中心/半径
             alive = [pos_at(pl['pts'], pl['ts'], tt) for pl in players
                      if pl['ts'][0] <= tt <= pl['ts'][-1]]
             if not alive:
                 continue
             ax, ay = team_anchor(alive)
-            rel = dist((ax, ay), c) / r
+            rel = zone_rel((ax, ay), c1, r1, c, r)
             rb = rel_bin(rel)
-            if rel <= 1.0:
-                dd = np.hypot(pos_arr[:, 0] - ax, pos_arr[:, 1] - ay)
-                pi = int(np.argmin(dd))
-                xT = beta[pi] + PHI[ph][rb]
-            else:
-                xT = 0.0
+            dd = np.hypot(pos_arr[:, 0] - ax, pos_arr[:, 1] - ay)
+            pi = int(np.argmin(dd))
+            xk_acc += bk[pi][ph] * BUCKET                 # 累计击杀 (单调递增)
+            xp = max(0.0, zone_w(rel, r1) * stage_w(r1) * bp[pi] + PHI[ph][rb])
             ix, iy = w2i(ax, ay)
             tpath.append({'t': tt, 'x': ix, 'y': iy, 'phase': ph + 1, 'rel': rel,
-                          'rel_bin': rb, 'xT': xT})
+                          'rel_bin': rb, 'xT': xk_acc + xp, 'kill': round(xk_acc, 3),
+                          'place': round(xp, 3)})
         teams.append({'id': tid, 'name': name, 'color': color, 'placement': placement,
                       'elim': elim, 'path': tpath})
     teams.sort(key=lambda x: x['placement'])
@@ -195,12 +221,11 @@ def main():
 
     wteam = next(t for t in teams if t['id'] == wid)
 
-    # 全队 xT 范围 + 动态 Y 轴 (β_p 可负 -> xT 圈内可为负, 给负轴留量)
+    # 全队 xT 范围 (击杀+排名均非负 -> xT 非负)
     all_xt = [p['xT'] for t in teams for p in t['path']]
     xt_max = max(all_xt) if all_xt else 10.0
-    xt_min = min(all_xt) if all_xt else 0.0
     YMAX = max(12.0, math.ceil(xt_max / 2) * 2)
-    YMIN = math.floor(xt_min) if xt_min < 0 else 0.0
+    YMIN = 0.0
 
     # 打印验证 (确认队伍之间 xT 有区分度)
     means = sorted(((sum(p['xT'] for p in t['path']) / len(t['path']), t['name']) for t in teams))
@@ -212,10 +237,12 @@ def main():
         print(f"  {nm:24} {m:5.2f}{mark}")
 
     # ---- 点位 (世界坐标 -> 图像) ----
-    px, py, pb = [], [], []
+    px, py, pb, pk = [], [], [], []
     for i in range(NP):
         ix, iy = w2i(pos_arr[i, 0], pos_arr[i, 1])
-        px.append(round(ix, 1)); py.append(round(iy, 1)); pb.append(round(float(beta[i]), 4))
+        px.append(round(ix, 1)); py.append(round(iy, 1))
+        pb.append(round(float(bp[i]), 4))
+        pk.append([round(float(bk[i][m]), 4) for m in range(6)])
 
     # ---- 色带 (xT 顺序 + β_p 发散) ----
     from matplotlib import colormaps as _cm
@@ -245,6 +272,7 @@ def main():
     wteam_json = json.dumps(wteam)
     kills_json = json.dumps(kills)
     px_json = json.dumps(px); py_json = json.dumps(py); pb_json = json.dumps(pb)
+    pk_json = json.dumps(pk)
     phi_json = json.dumps(PHI)
     xtramp_json = json.dumps(XTRAMP); betaramp_json = json.dumps(BETARAMP)
     relbins_json = json.dumps(REL_BINS)
@@ -254,7 +282,7 @@ def main():
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>点位 xT — {header}</title>
 <style>
-:root{{--bg:#0d0f13;--panel:#161a22;--ink:#e8eaee;--muted:#98a0ab;--accent:#CCFF33;--kill:#ff5252;}}
+:root{{--bg:#0d0f13;--panel:#161a22;--ink:#e8eaee;--muted:#98a0ab;--accent:#CCFF33;--kill:#ff5252;--place:#4da3ff;}}
 *{{box-sizing:border-box;}}
 body{{margin:0;background:var(--bg);color:var(--ink);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;}}
 header{{padding:14px 20px;border-bottom:1px solid #232834;display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap;}}
@@ -286,6 +314,13 @@ header .meta{{color:var(--muted);font-size:12px;}}
 .controls button{{background:#1c2130;color:var(--ink);border:1px solid #2a3142;border-radius:6px;padding:6px 12px;cursor:pointer;font-size:13px;}}
 .controls button:hover{{border-color:#4a5468;}}
 .controls input[type=range]{{flex:1;}}
+.readout{{background:rgba(22,26,34,.9);border:1px solid #2a3142;border-radius:8px;padding:9px 12px;display:flex;flex-wrap:wrap;gap:8px 18px;align-items:baseline;}}
+.readout .team{{font-size:13px;font-weight:600;}}
+.readout .kv{{font-size:11px;color:var(--muted);}}
+.readout .kv b{{font-variant-numeric:tabular-nums;font-size:14px;}}
+.readout .kv.kill b{{color:var(--kill);}}
+.readout .kv.place b{{color:var(--place);}}
+.readout .kv.total b{{color:var(--accent);}}
 .tlist{{display:flex;flex-direction:column;gap:2px;max-height:240px;overflow-y:auto;}}
 .titem{{display:flex;align-items:center;gap:8px;padding:4px 8px;border-radius:6px;cursor:pointer;font-size:12px;color:var(--muted);}}
 .titem:hover{{background:#1c2130;}}
@@ -297,7 +332,7 @@ header .meta{{color:var(--muted);font-size:12px;}}
 </style></head><body>
 <header>
   <h1>点位 xT 演示 — {header}</h1>
-  <div class="meta">20 队 · 点位 xT = β_p + φ(圈相对) 随圈刷新 · 毒区清零 · 吃鸡 {wteam['name']}</div>
+  <div class="meta">20 队 · 点位 xT = 累计击杀(点位×圈斜率积分) + 排名(β_place+φ) · 非折现 · 吃鸡 {wteam['name']}</div>
 </header>
 <div class="layout">
   <div class="mapcol">
@@ -320,18 +355,25 @@ header .meta{{color:var(--muted);font-size:12px;}}
       <div class="mapui">
         <div class="seg" id="mode">
           <button id="mxt" class="on">随圈 xT</button>
-          <button id="mbeta">基值 β_p</button>
+          <button id="mbeta">排名偏离 β_place</button>
         </div>
         <label><input type="checkbox" id="pttoggle" checked> 点位层</label>
-        <div class="legend" id="legend"><span id="lg0">低</span><span class="bar" id="lgbar"></span><span id="lg1">高</span><span class="g" id="lggray"> · 灰=毒清零</span></div>
+        <div class="legend" id="legend"><span id="lg0">低</span><span class="bar" id="lgbar"></span><span id="lg1">高</span></div>
       </div>
     </div>
   </div>
   <div class="chartcol">
-    <div class="chart"><h3>全员 xT 曲线 (期望未来分 · 随圈刷新 + 点位切换)</h3><svg id="chart" viewBox="0 0 360 240" preserveAspectRatio="none"></svg></div>
+    <div class="chart"><h3>全员 xT 曲线 (累计击杀 + 当前排名潜力 · 随圈刷新 + 点位切换)</h3><svg id="chart" viewBox="0 0 360 240" preserveAspectRatio="none"></svg></div>
     <div class="controls">
       <button id="play">▶ 播放</button>
       <input type="range" id="slider" min="0" max="{dur//BUCKET}" value="0" step="1">
+    </div>
+    <div class="readout" id="readout">
+      <span class="team" id="roTeam">{wteam['name']}</span>
+      <span class="kv kill">击杀 xT_kill <b id="roKill">0</b></span>
+      <span class="kv place">排名 xT_place <b id="roPlace">0</b></span>
+      <span class="kv total">合计 xT <b id="roTotal">0</b></span>
+      <span class="kv">圈 <b id="roPhase">0</b> · rel <b id="roRel">—</b></span>
     </div>
     <div class="chart"><h3>队伍 (按名次 · 悬停高亮)</h3><div class="tlist" id="tlist"></div></div>
   </div>
@@ -345,6 +387,7 @@ const dur={dur};
 const PX={px_json};
 const PY={py_json};
 const PB={pb_json};
+const PK={pk_json};
 const PHI={phi_json};
 const XTRAMP={xtramp_json};
 const BETARAMP={betaramp_json};
@@ -356,6 +399,11 @@ const NP={NP};
 const PHASE_COLOR=['#8a93a0','#b58900','#d33682','#6c71c4','#dc322f','#2aa198'];
 
 function relbin(rel){{for(let i=0;i<RELBINS.length;i++){{if(rel<RELBINS[i])return i;}}return RELBINS.length;}}
+const MIN_ZONE_R_IMG=500/{RATIO};
+const R0_IMG=31000/{RATIO};
+function zoneRel(x,y,c1x,c1y,r1,cx,cy,r){{return r1>=MIN_ZONE_R_IMG?Math.hypot(x-c1x,y-c1y)/r1:Math.hypot(x-cx,y-cy)/Math.max(r,1);}}
+function zoneW(rel,r1){{return r1<MIN_ZONE_R_IMG?1.0:Math.max(0,Math.min(1,(1.6-rel)/0.6));}}
+function stageW(r1){{return Math.max(0,1-r1/R0_IMG);}}
 
 // 圈
 const rg=document.getElementById('rings');
@@ -388,10 +436,10 @@ function ringAt(t){{
     const s=stages[i];
     if(t>=s.t0){{
       const p=Math.min(1,(t-s.t0)/Math.max(s.t1-s.t0,1e-6));
-      return {{phase:i, cx:s.c0x+(s.c1x-s.c0x)*p, cy:s.c0y+(s.c1y-s.c0y)*p, r:s.r0+(s.r1-s.r0)*p}};
+      return {{phase:i, cx:s.c0x+(s.c1x-s.c0x)*p, cy:s.c0y+(s.c1y-s.c0y)*p, r:s.r0+(s.r1-s.r0)*p, c1x:s.c1x, c1y:s.c1y, r1:s.r1}};
     }}
   }}
-  return {{phase:0, cx:stages[0].c0x, cy:stages[0].c0y, r:stages[0].r0}};
+  return {{phase:0, cx:stages[0].c0x, cy:stages[0].c0y, r:stages[0].r0, c1x:stages[0].c1x, c1y:stages[0].c1y, r1:stages[0].r1}};
 }}
 
 let mode='xT';
@@ -400,9 +448,8 @@ function colorPoint(i, rng){{
     const t=Math.max(0,Math.min(255,Math.round((PB[i]+BMAX)/(2*BMAX)*255)));
     return BETARAMP[t];
   }}
-  const rel=Math.hypot(PX[i]-rng.cx,PY[i]-rng.cy)/rng.r;
-  if(rel>1.0)return '#3a3f47';
-  const xT=PB[i]+PHI[rng.phase][relbin(rel)];
+  const rel=zoneRel(PX[i],PY[i],rng.c1x,rng.c1y,rng.r1,rng.cx,rng.cy,rng.r);
+  const xT=PK[i][rng.phase] + Math.max(0, zoneW(rel,rng.r1)*stageW(rng.r1)*PB[i] + PHI[rng.phase][relbin(rel)]);
   const t=Math.max(0,Math.min(255,Math.round(xT/YMAX*255)));
   return XTRAMP[t];
 }}
@@ -511,7 +558,14 @@ function update(i){{
   cur.setAttribute('x1',X(t));cur.setAttribute('x2',X(t));
   const wt={wteam_json};
   const p=wt.path.find(q=>Math.abs(q.t-t)<=2)||wt.path[0];
-  if(p){{dot.setAttribute('cx',p.x);dot.setAttribute('cy',p.y);}}
+  if(p){{
+    dot.setAttribute('cx',p.x);dot.setAttribute('cy',p.y);
+    document.getElementById('roKill').textContent = p.kill.toFixed(2);
+    document.getElementById('roPlace').textContent = p.place.toFixed(2);
+    document.getElementById('roTotal').textContent = p.xT.toFixed(2);
+    document.getElementById('roPhase').textContent = p.phase;
+    document.getElementById('roRel').textContent = p.rel.toFixed(2);
+  }}
   slider.value=i;
 }}
 let timer=null,playing=false;

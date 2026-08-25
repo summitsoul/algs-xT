@@ -67,7 +67,7 @@ td.num{text-align:right;}
 </style></head><body>
 <header>
   <h1>队伍 xT 轨迹（动态）— __GAME__（冠军局）</h1>
-  <div class="meta">20 队 · xT = β_p(点位) + φ(圈相对) · 毒区清零 · 吃鸡 <b style="color:#CCFF33">__WINNER__</b> · 滚轮缩放 / 拖拽平移</div>
+  <div class="meta">20 队 · xT = 击杀(点位·圈斜率, 累计积分) + 排名(β_p+φ) · 非折现 · 吃鸡 <b style="color:#CCFF33">__WINNER__</b> · 滚轮缩放 / 拖拽平移</div>
 </header>
 <div class="layout">
   <div class="mapcol">
@@ -76,6 +76,13 @@ td.num{text-align:right;}
       <button id="play">▶ 播放</button>
       <input type="range" id="slider" min="0" max="__DUR__" value="0" step="1">
       <span class="tlabel" id="tlabel">t = 0s</span>
+    </div>
+    <div class="readout" id="readout">
+      <span class="team" id="roTeam"></span>
+      <span class="kv kill">击杀 xT_kill <b id="roKill">0</b></span>
+      <span class="kv place">排名 xT_place <b id="roPlace">0</b></span>
+      <span class="kv total">合计 xT <b id="roTotal">0</b></span>
+      <span class="kv">圈 <b id="roPhase">0</b> · rel <b id="roRel">—</b></span>
     </div>
     <div class="mapwrap">
       <svg class="map" id="map" viewBox="0 0 4096 4096" preserveAspectRatio="xMidYMid meet">
@@ -104,13 +111,6 @@ td.num{text-align:right;}
         <button id="zout" title="缩小">−</button>
         <button id="zreset" title="重置视图">⤢</button>
       </div>
-    </div>
-    <div class="readout" id="readout">
-      <span class="team" id="roTeam"></span>
-      <span class="kv kill">击杀 xT_kill <b id="roKill">0</b></span>
-      <span class="kv place">排名 xT_place <b id="roPlace">0</b></span>
-      <span class="kv total">合计 xT <b id="roTotal">0</b></span>
-      <span class="kv">圈 <b id="roPhase">0</b> · rel <b id="roRel">—</b></span>
     </div>
     <p class="hint">▶ 播放后：圈随游戏时间实时收缩漂移，点位按「当前圈」实时重着色 xT；亮黄线 = 选中队已走过的路，淡灰线 = 其他队伍路线。用顶部下拉或右栏队伍切换焦点队，下方实时显示该队击杀/排名/合计 xT。点击「圈X」跳转到该圈完成时刻。</p>
   </div>
@@ -145,21 +145,25 @@ const TEAMS = {}; DATA.teams.forEach(t=>TEAMS[t.name]=t);
 let curMetric = 'total', focus = WIN, showAll = false;
 
 function relbin(rel){ for(let i=0;i<RB.length;i++) if(rel<RB[i]) return i; return RB.length; }
+const MIN_ZONE_R = 500;
+const R0 = 31000;
+function zoneRel(x,y,c1x,c1y,r1,cx,cy,r){ return r1>=MIN_ZONE_R? Math.hypot(x-c1x,y-c1y)/r1 : Math.hypot(x-cx,y-cy)/Math.max(r,1); }
+function zoneW(rel,r1){ return r1<MIN_ZONE_R? 1.0 : Math.max(0,Math.min(1,(1.6-rel)/0.6)); }
+function stageW(r1){ return Math.max(0, 1-r1/R0); }
 function ringAt(t){
   const R = DATA.rings;
   for(let i=R.length-1;i>=0;i--){ const st=R[i]; if(t>=st.t0){
     const p = Math.min(1,(t-st.t0)/Math.max(st.t1-st.t0,1e-6));
-    return {phase:i, cx:st.c0[0]+(st.c1[0]-st.c0[0])*p, cy:st.c0[1]+(st.c1[1]-st.c0[1])*p, r:st.r0+(st.r1-st.r0)*p};
+    return {phase:i, cx:st.c0[0]+(st.c1[0]-st.c0[0])*p, cy:st.c0[1]+(st.c1[1]-st.c0[1])*p, r:st.r0+(st.r1-st.r0)*p, c1x:st.c1[0], c1y:st.c1[1], r1:st.r1};
   }}
-  const st=R[0]; return {phase:0, cx:st.c0[0], cy:st.c0[1], r:st.r0};
+  const st=R[0]; return {phase:0, cx:st.c0[0], cy:st.c0[1], r:st.r0, c1x:st.c1[0], c1y:st.c1[1], r1:st.r1};
 }
 function pointVal(i, metric, rng){
-  const rel = Math.hypot(DATA.points.x[i]-rng.cx, DATA.points.y[i]-rng.cy)/rng.r;
-  if(rel>1) return 0;
+  const rel = zoneRel(DATA.points.x[i], DATA.points.y[i], rng.c1x, rng.c1y, rng.r1, rng.cx, rng.cy, rng.r);
   const key = rng.phase+','+relbin(rel);
-  if(metric==='kill') return DATA.points.bk[i] + PK[key];
-  if(metric==='place') return DATA.points.bp[i] + PP[key];
-  return DATA.points.bk[i]+DATA.points.bp[i] + PK[key] + PP[key];
+  if(metric==='kill') return DATA.points.bk[i][rng.phase];
+  if(metric==='place') return Math.max(0, zoneW(rel, rng.r1)*stageW(rng.r1)*DATA.points.bp[i] + PP[key]);
+  return DATA.points.bk[i][rng.phase] + Math.max(0, zoneW(rel, rng.r1)*stageW(rng.r1)*DATA.points.bp[i] + PP[key]);
 }
 function heat(v, vmax, hue){
   if(v<=0) return '#2e313a';
@@ -496,7 +500,7 @@ function update(t){
   }
   document.getElementById('roPhase').textContent = rng.phase + 1;
   const at = posAt(ft.path, t);
-  document.getElementById('roRel').textContent = at? (Math.hypot(at[1]-rng.cx, at[2]-rng.cy)/rng.r).toFixed(2) : '—';
+  document.getElementById('roRel').textContent = at? zoneRel(at[1], at[2], rng.c1x, rng.c1y, rng.r1, rng.cx, rng.cy, rng.r).toFixed(2) : '—';
 }
 
 // ---- 初始化 ----

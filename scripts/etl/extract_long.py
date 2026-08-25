@@ -18,6 +18,8 @@ PLACEMENT_PTS = {1: 12, 2: 9, 3: 7, 4: 5, 5: 4, 6: 3, 7: 3,
 BUCKET = 5
 REL_BINS = [0.3, 0.7, 1.0, 1.15, 1.6]
 REL_NAMES = ['圈心', '圈内', '圈内边缘', '圈外贴边', '圈外', '远圈外']
+MIN_ZONE_R = 500.0  # 新圈(安全区)半径 < 此值视为无安全区(最后缩到一点), rel 退回毒环、β_p 不衰减
+R0 = 31000.0        # 圈1 新圈(安全区)半径, w_stage 归一化基准
 VEL_WINDOW = 15    # 速度窗口(秒): 判"踩点/守家"看过去15s位移
 STAY_VEL = 400     # 位移 <400 单位 => 算踩点; 否则算出去动/转点
 GLOB = "replay/storm point/*.json"
@@ -27,6 +29,29 @@ META = "data/long_table.meta.json"
 
 def dist(a, b):
     return math.hypot(a[0] - b[0], a[1] - b[1])
+
+
+def zone_rel(a, c1, r1, c_ring, r_ring):
+    """新圈基准 rel(圈内/圈外判据)。常规圈(r1>=MIN_ZONE_R)用新圈(安全区)中心/半径;
+    最后圈(r1≈0, 无安全区)退回正在缩的毒环。"""
+    if r1 >= MIN_ZONE_R:
+        return dist(a, c1) / r1
+    return dist(a, c_ring) / max(r_ring, 1.0)
+
+
+def zone_w(rel, r1):
+    """β_p 圈外平滑衰减权重。最后圈不衰减=1.0; 常规圈 rel<=1 全额, rel 1→1.6 线性降到0,
+    rel>=1.6(远圈外)归零。理由: 点位固有排名价值只在点位被圈覆盖时才兑现, 圈外站不住。"""
+    if r1 < MIN_ZONE_R:
+        return 1.0
+    return max(0.0, min(1.0, (1.6 - rel) / 0.6))
+
+
+def stage_w(r1):
+    """β_p 圈阶段权重: 圈越大(越早)点位固有价值兑现越低, 缩到决赛圈才全额。
+    w_stage = 1 - r1/R0 → 圈1=0, 圈2≈0.52, 圈3≈0.74, 圈4≈0.87, 圈5≈0.94, 圈6≈1.0。
+    理由: 点位固有排名价值只在圈缩到足以争抢该点时才兑现, 早期圈"在圈内"形同虚设。"""
+    return max(0.0, 1.0 - r1 / R0)
 
 
 def centroid(pts):
@@ -145,6 +170,8 @@ def extract_game(path):
         t, t_next = b * BUCKET, (b + 1) * BUCKET
         ph, c, r = ring_at(t)
         ph_next, c_next, r_next = ring_at(t_next)
+        c1, r1 = stages[ph]['c1'], stages[ph]['r1']          # 新圈(安全区)中心/半径
+        c1n, r1n = stages[ph_next]['c1'], stages[ph_next]['r1']
 
         for tid, team in teams.items():
             if team['elim'] < t:
@@ -154,10 +181,11 @@ def extract_game(path):
             if not alive:
                 continue
             a = team_anchor(alive, t)
+            rel = zone_rel(a, c1, r1, c, r)
             row = {'game': name, 'region': region, 'team': tid,
                    'team_name': team.get('name', f"T{tid}"),
-                   'b': b, 't': t, 'phase': ph, 'rel': dist(a, c) / r,
-                   'rel_bin': rel_bin(dist(a, c) / r),
+                   'b': b, 't': t, 'phase': ph, 'rel': rel,
+                   'rel_bin': rel_bin(rel), 'w_zone': zone_w(rel, r1), 'w_stage': stage_w(r1),
                    'ax': a[0], 'ay': a[1], 'kills': tk[tid][b],
                    'cx': c[0], 'cy': c[1], 'r': r}
 
@@ -175,7 +203,7 @@ def extract_game(path):
             row['died'] = 0
             row['placement_pts'] = 0
             row['next_phase'] = ph_next
-            row['next_rel_bin'] = rel_bin(dist(an, c_next) / r_next)
+            row['next_rel_bin'] = rel_bin(zone_rel(an, c1n, r1n, c_next, r_next))
             row['next_ax'] = an[0]
             row['next_ay'] = an[1]
             row['next_cx'] = c_next[0]

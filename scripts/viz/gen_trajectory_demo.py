@@ -7,7 +7,9 @@ gen_trajectory_demo.py — 生成「队伍 xT 轨迹」动态网页 demo (自包
     点位按当前圈实时着色 xT, 吃鸡队(或选中队)路径逐帧推进, 20 队实时位置。
 右: 20 队 xT 轨迹线图(带 now 游标) + 吃鸡队 击杀/排名 分解 + 实时读数 + 排名表。
 
-xT(p, 圈) = β_p + φ_m(rel_bin), 毒里软处理(短暂进出或圈1/圈2 不清零)。数据全部内联。
+xT(p, 圈) = xT_kill(p, 圈) + xT_place(p, 圈); kill=该点该圈每秒击杀数(斜率),
+沿轨迹积分得累计击杀(单调递增, 换点只改斜率不清零); place=β_p_place+φ_place
+(非折现, 毒里不再硬记0, 非负)。数据全部内联。
 """
 import json, math, bisect, base64, io, os, re, sys
 import numpy as np
@@ -15,8 +17,6 @@ from PIL import Image
 
 REL_BINS = [0.3, 0.7, 1.0, 1.15, 1.6]
 BUCKET = 5
-BRIEF_SEC = 15   # 毒内连续停留 ≤15s 视为"短暂进出", 不强制清零
-SOFT_BIN = 2     # 软处理时按"圈内边缘"(rel_bin=2) 计值
 VEL_WINDOW = 15  # 速度窗口(秒): 判"踩点/守家"看过去15s位移
 STAY_VEL = 400   # 位移 <400 单位 => 算踩点; 否则算出去动/转点
 RATIO = 24.93
@@ -39,11 +39,9 @@ MAP_SIZE = 2048
 
 # ---------- 模型 ----------
 phi = json.load(open("data/phi.json", encoding='utf-8'))
-pk = {(int(a), int(b)): v for a, b, v in
-      (k.split(',') + [v] for k, v in phi['phi_kill'].items())}
 pp = {(int(a), int(b)): v for a, b, v in
       (k.split(',') + [v] for k, v in phi['phi_place'].items())}
-bk = np.load("data/beta_kill.npy")
+bk = np.load("data/beta_kill.npy")     # 击杀斜率 = 每秒击杀数
 bp = np.load("data/beta_place.npy")
 pos_arr = np.load("data/points_pos.npy")
 NP = len(bk)
@@ -58,6 +56,30 @@ def rel_bin(rel):
 
 def dist(a, b):
     return math.hypot(a[0] - b[0], a[1] - b[1])
+
+
+MIN_ZONE_R = 500.0  # 新圈(安全区)半径 < 此值视为无安全区(最后缩到一点), rel 退回毒环、β_p 不衰减
+R0 = 31000.0        # 圈1 新圈(安全区)半径, w_stage 归一化基准
+
+
+def zone_rel(a, c1, r1, c_ring, r_ring):
+    """新圈基准 rel(圈内/圈外判据)。常规圈用新圈(安全区)中心/半径; 最后圈(r1≈0)退回正在缩的毒环。"""
+    if r1 >= MIN_ZONE_R:
+        return dist(a, c1) / r1
+    return dist(a, c_ring) / max(r_ring, 1.0)
+
+
+def zone_w(rel, r1):
+    """β_p 圈外平滑衰减权重。最后圈不衰减=1.0; 常规圈 rel<=1 全额, rel 1→1.6 线性降到0, rel>=1.6 归零。"""
+    if r1 < MIN_ZONE_R:
+        return 1.0
+    return max(0.0, min(1.0, (1.6 - rel) / 0.6))
+
+
+def stage_w(r1):
+    """β_p 圈阶段权重: 圈越大(越早)点位固有价值兑现越低, 缩到决赛圈才全额。
+    w_stage = 1 - r1/R0 → 圈1=0, 圈2≈0.52, 圈3≈0.74, 圈4≈0.87, 圈5≈0.94, 圈6≈1.0。"""
+    return max(0.0, 1.0 - r1 / R0)
 
 
 def centroid(pts):
@@ -153,42 +175,22 @@ for st in s['teams']:
         teams[tid]['name'] = st.get('teamName', f"T{tid}")
 
 
-def xT_of(x, y, t, brief=False):
+def xT_of(x, y, t):
     ph, (cx, cy), r = ring_at(t)
-    rel = math.hypot(x - cx, y - cy) / r
+    c1, r1 = stages[ph]['c1'], stages[ph]['r1']    # 新圈(安全区)中心/半径
+    rel = zone_rel((x, y), c1, r1, (cx, cy), r)
     j = int(np.argmin(np.hypot(pos_arr[:, 0] - x, pos_arr[:, 1] - y)))
-    if rel <= 1.0:
-        b = rel_bin(rel)
-        return bk[j] + pk[(ph, b)], bp[j] + pp[(ph, b)], rel, ph
-    if brief or ph < 2:     # 短暂进出 或 圈1/圈2: 不强制清零, 按圈内边缘计值
-        return bk[j] + pk[(ph, SOFT_BIN)], bp[j] + pp[(ph, SOFT_BIN)], rel, ph
-    return 0.0, 0.0, rel, ph
+    slope = bk[j][ph]                              # 击杀斜率: 每秒击杀数(按当前圈分档)
+    xp = max(0.0, zone_w(rel, r1) * stage_w(r1) * bp[j] + pp[(ph, rel_bin(rel))])  # 排名: β_p 圈外衰减 + 圈阶段权重 + 非折现 + 非负
+    return slope, xp, rel, ph
 
 
 # ---------- 逐队轨迹 + 路径 ----------
-def mark_brief(rels, bucket_sec=BUCKET, brief_sec=BRIEF_SEC):
-    """连续毒内停留 ≤brief_sec 的桶标记为'短暂进出'(不清零)。rels 含 None 表缺桶。"""
-    brief = [False] * len(rels)
-    i = 0
-    while i < len(rels):
-        if rels[i] is not None and rels[i] > 1.0:
-            j = i
-            while j < len(rels) and rels[j] is not None and rels[j] > 1.0:
-                j += 1
-            if (j - i) * bucket_sec <= brief_sec:
-                for k in range(i, j):
-                    brief[k] = True
-            i = j
-        else:
-            i += 1
-    return brief
-
-
 series_map, path_map = {}, {}
 for tid, team in teams.items():
     n_buckets = int(dur // BUCKET) + 1
-    # 第一遍: 算每个桶的锚点 + rel, 用来判"短暂进出毒"
-    anchors, rels = [], []
+    ts, pt = [], []
+    xk_acc = 0.0
     for b in range(n_buckets):
         t = b * BUCKET
         if team['elim'] < t:
@@ -196,22 +198,11 @@ for tid, team in teams.items():
         alive = [pl for pl in team['players']
                  if pl['ts'][0] <= t <= pl['ts'][-1]]
         if not alive:
-            anchors.append(None); rels.append(None)
             continue
         a = team_anchor(alive, t)
-        ph, (cx, cy), r = ring_at(t)
-        anchors.append(a)
-        rels.append(math.hypot(a[0] - cx, a[1] - cy) / r)
-    brief = mark_brief(rels)
-    # 第二遍: 算 xT
-    ts, pt = [], []
-    for b in range(len(anchors)):
-        a = anchors[b]
-        if a is None:
-            continue
-        t = b * BUCKET
-        xk, xp, rel, ph = xT_of(a[0], a[1], t, brief=brief[b])
-        ts.append([t, round(xk, 3), round(xp, 3), round(xk + xp, 3)])
+        slope, xp, rel, ph = xT_of(a[0], a[1], t)
+        xk_acc += slope * BUCKET                 # 累计击杀 (单调递增, 换点只改斜率)
+        ts.append([t, round(xk_acc, 3), round(xp, 3), round(xk_acc + xp, 3)])
         pt.append([t, round(a[0], 1), round(a[1], 1)])
     series_map[tid] = ts
     path_map[tid] = pt
@@ -240,17 +231,14 @@ img.save(buf, 'JPEG', quality=70)
 map_b64 = base64.b64encode(buf.getvalue()).decode()
 
 # ---------- 色阶 vmax (各指标在所有完成圈下的点位 xT 上限) ----------
-vmax = {'total': 0.0, 'kill': 0.0, 'place': 0.0}
+vmax = {'total': 0.0, 'kill': float(bk.max()), 'place': 0.0}
 for m in order:
-    cx, cy = stages[m]['c1']
-    r = stages[m]['r1']
+    c1, r1 = stages[m]['c1'], stages[m]['r1']
     for i in range(NP):
-        rel = math.hypot(pos_arr[i, 0] - cx, pos_arr[i, 1] - cy) / r
-        if rel <= 1.0:
-            b = rel_bin(rel)
-            vmax['kill'] = max(vmax['kill'], bk[i] + pk[(m, b)])
-            vmax['place'] = max(vmax['place'], bp[i] + pp[(m, b)])
-            vmax['total'] = max(vmax['total'], bk[i] + bp[i] + pk[(m, b)] + pp[(m, b)])
+        rel = zone_rel((pos_arr[i, 0], pos_arr[i, 1]), c1, r1, c1, r1)
+        xp = max(0.0, zone_w(rel, r1) * stage_w(r1) * bp[i] + pp[(m, rel_bin(rel))])
+        vmax['place'] = max(vmax['place'], xp)
+        vmax['total'] = max(vmax['total'], bk[i][m] + xp)
 
 # ---------- 组装数据 ----------
 DATA = {
@@ -265,9 +253,9 @@ DATA = {
                'r0': stages[m]['r0'], 'r1': stages[m]['r1']} for m in order],
     'points': {'x': [round(p[0], 1) for p in pos_arr],
                'y': [round(p[1], 1) for p in pos_arr],
-               'bk': [round(v, 3) for v in bk],
+               'bk': [[round(v, 3) for v in bk[i]] for i in range(NP)],
                'bp': [round(v, 3) for v in bp]},
-    'phi': {'kill': {f"{a},{b}": round(v, 4) for (a, b), v in pk.items()},
+    'phi': {'kill': {f"{a},{b}": 0.0 for (a, b), v in pp.items()},
             'place': {f"{a},{b}": round(v, 4) for (a, b), v in pp.items()}},
     'teams': [{'name': teams[tid].get('name', f"T{tid}"),
                'rank': teams[tid].get('rank', 99),

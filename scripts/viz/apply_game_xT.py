@@ -3,8 +3,7 @@
 """
 apply_game_xT.py — 把点位 xT 套到一场具体比赛的圈上 (热点图)
 
-xT(点位, 圈) = β_p + φ_m(rel_bin)   圈内(rel<=1) ; 毒里清零(灰)
-β_p 拆成 β_p_kill / β_p_place, φ 拆成 φ_kill / φ_place。
+xT(点位, 圈) = kill(直接局部均值, 按当前圈分档) + place(β_p_place + φ_place, 非折现, 毒里不再硬记0)。
 
 用法:
   python3 scripts/viz/apply_game_xT.py "replay/storm point/sp_apac-s_d__g6_abfd4cf4.json"
@@ -28,6 +27,23 @@ def rel_bin(rel):
         if rel < th:
             return i
     return len(REL_BINS)
+
+
+MIN_ZONE_R = 500.0  # 新圈(安全区)半径 < 此值视为无安全区(最后缩到一点), β_p 不衰减
+R0 = 31000.0        # 圈1 新圈(安全区)半径, w_stage 归一化基准
+
+
+def zone_w(rel, r1):
+    """β_p 圈外平滑衰减权重。最后圈不衰减=1.0; 常规圈 rel<=1 全额, rel 1→1.6 线性降到0, rel>=1.6 归零。"""
+    if r1 < MIN_ZONE_R:
+        return 1.0
+    return max(0.0, min(1.0, (1.6 - rel) / 0.6))
+
+
+def stage_w(r1):
+    """β_p 圈阶段权重: 圈越大(越早)点位固有价值兑现越低, 缩到决赛圈才全额。
+    w_stage = 1 - r1/R0 → 圈1=0, 圈2≈0.52, 圈3≈0.74, 圈4≈0.87, 圈5≈0.94, 圈6≈1.0。"""
+    return max(0.0, 1.0 - r1 / R0)
 
 
 def world2img(x, y):
@@ -68,12 +84,10 @@ GAME_PATH = sys.argv[1] if len(sys.argv) > 1 else "replay/storm point/sp_global_
 CIRCLES = parse_circles(GAME_PATH)
 
 phi = json.load(open("data/phi.json", encoding='utf-8'))
-pk = {(int(a), int(b)): v for a, b, v in
-      (k.split(',') + [v] for k, v in phi['phi_kill'].items())}
 pp = {(int(a), int(b)): v for a, b, v in
       (k.split(',') + [v] for k, v in phi['phi_place'].items())}
 
-bk = np.load("data/beta_kill.npy")
+bk = np.load("data/beta_kill.npy")     # 击杀 = 直接局部均值
 bp = np.load("data/beta_place.npy")
 pos_arr = np.load("data/points_pos.npy")
 NP = len(bk)
@@ -105,28 +119,23 @@ def which_label(w):
 
 def draw(ax, stage, which):
     (cx, cy), rr = CIRCLES[stage]
-    bx = bk if which == 'kill' else bp
-    phi_tbl = pk if which == 'kill' else pp
     vals = np.zeros(NP)
     for i in range(NP):
         rel = math.hypot(pos_arr[i, 0] - cx, pos_arr[i, 1] - cy) / rr
-        if rel <= 1.0:
-            vals[i] = bx[i] + phi_tbl[(stage, rel_bin(rel))]
+        if which == 'kill':
+            vals[i] = bk[i][stage]
         else:
-            vals[i] = np.nan
+            vals[i] = max(0.0, zone_w(rel, rr) * stage_w(rr) * bp[i] + pp[(stage, rel_bin(rel))])
     ix = np.array([world2img(x, y)[0] for x, y in pos_arr])
     iy = np.array([world2img(x, y)[1] for x, y in pos_arr])
     ax.imshow(img, extent=[0, SIZE, SIZE, 0], zorder=0)
     cxi, cyi = world2img(cx, cy)
     ax.add_patch(plt.Circle((cxi, cyi), rr / RATIO, fill=False,
                             edgecolor='cyan', lw=2, zorder=2))
-    inmask = ~np.isnan(vals)
-    vmax = np.nanmax(vals)
-    ax.scatter(ix[inmask], iy[inmask], c=vals[inmask], cmap='YlOrRd',
+    vmax = vals.max()
+    ax.scatter(ix, iy, c=vals, cmap='YlOrRd',
                s=70, edgecolors='none', alpha=0.9, zorder=3,
                vmin=0, vmax=vmax)
-    ax.scatter(ix[~inmask], iy[~inmask], c='#666', s=18, edgecolors='none',
-               alpha=0.5, zorder=3)
     ax.set_xlim(0, SIZE); ax.set_ylim(SIZE, 0)
     ax.set_axis_off()
     ax.set_title(f'圈{stage + 1} {which_label(which)} (r={rr:.0f})', fontsize=11)
@@ -136,7 +145,7 @@ for ri, st in enumerate(stages):
     draw(axes[ri, 0], st, 'kill')
     draw(axes[ri, 1], st, 'place')
 
-fig.suptitle(f'{game_label(GAME_PATH)} — 点位 xT 热点图 (圈内 β_p+φ, 毒区清零)',
+fig.suptitle(f'{game_label(GAME_PATH)} — 点位 xT 热点图 (击杀直接均值 + 排名 β_p+φ 非折现)',
              fontsize=15, y=0.995)
 plt.tight_layout()
 out = "output/xT_" + os.path.basename(GAME_PATH).replace(".json", "") + ".png"

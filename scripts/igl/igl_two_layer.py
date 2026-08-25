@@ -34,8 +34,6 @@ LAM = 3.0
 
 # ---------- 模型 ----------
 phi = json.load(open(PHI, encoding='utf-8'))
-pk = {(int(a), int(b)): v for a, b, v in
-      (k.split(',') + [v] for k, v in phi['phi_kill'].items())}
 pp = {(int(a), int(b)): v for a, b, v in
       (k.split(',') + [v] for k, v in phi['phi_place'].items())}
 ef_k = {(int(a), int(b)): v for a, b, v in
@@ -44,14 +42,12 @@ ef_p = {(int(a), int(b)): v for a, b, v in
         (k.split(',') + [v] for k, v in phi['E_final_place'].items())}
 E_final = {s: ef_k[s] + ef_p[s] for s in ef_k}
 
-bk = np.load("data/beta_kill.npy")
+bk = np.load("data/beta_kill.npy")     # 击杀 = 直接局部均值
 bp = np.load("data/beta_place.npy")
 pos_arr = np.load("data/points_pos.npy")
 NP = len(bk)
 
-phi_kill = np.zeros((6, 6)); phi_place = np.zeros((6, 6))
-for (p, b), v in pk.items():
-    phi_kill[p, b] = v
+phi_place = np.zeros((6, 6))
 for (p, b), v in pp.items():
     phi_place[p, b] = v
 
@@ -83,52 +79,19 @@ ys = np.array([r['ay'] for r in rows])
 phase = np.array([r['phase'] for r in rows])
 relbin = np.array([r['rel_bin'] for r in rows])
 rel = np.array([r['rel'] for r in rows])
+w_zone = np.array([r['w_zone'] for r in rows])
+w_stage = np.array([r['w_stage'] for r in rows])
 t = np.array([r['t'] for r in rows])
 game = [r['game'] for r in rows]
 team = [r['team_name'].lower() for r in rows]
 
-# 毒里软处理: 短暂进出毒(连续毒内 ≤BRIEF_SEC) 或 圈1/圈2(phase<2) 不强制清零,
-# 按"圈内边缘"(rel_bin=SOFT_BIN) 计值; 圈3+ 且持续在毒里才清零。
-BRIEF_SEC = 15
-SOFT_BIN = 2
-
-
-def poison_brief_mask(game, team, t, rel, brief_sec=BRIEF_SEC):
-    """每行是否处于'短暂进出毒'(连续毒内停留 ≤brief_sec)。按 (game,team,t) 排序。"""
-    n = len(rel)
-    order = sorted(range(n), key=lambda i: (game[i], team[i], t[i]))
-    brief = np.zeros(n, dtype=bool)
-    i = 0
-    while i < n:
-        gi, ti = game[order[i]], team[order[i]]
-        j = i
-        while j < n and game[order[j]] == gi and team[order[j]] == ti:
-            j += 1
-        k = i
-        while k < j:
-            if rel[order[k]] > 1.0:
-                m = k
-                while m < j and rel[order[m]] > 1.0:
-                    m += 1
-                if (m - k) * 5 <= brief_sec:      # 采样间隔 5s
-                    brief[order[k:m]] = True
-                k = m
-            else:
-                k += 1
-        i = j
-    return brief
-
-
+# 击杀 = 直接局部均值(按当前圈分档); 排名 = β_place + φ_place(非折现, 毒里不再硬记0, 非负)
 j = nearest_idx(xs, ys)
-inring = rel <= 1.0
-brief = poison_brief_mask(game, team, t, rel)
-soft = (~inring) & (brief | (phase < 2))        # 短暂进出 或 圈1/圈2
-xk = np.where(inring, bk[j] + phi_kill[phase, relbin], 0.0)
-xp = np.where(inring, bp[j] + phi_place[phase, relbin], 0.0)
-xk = np.where(soft, bk[j] + phi_kill[phase, SOFT_BIN], xk)
-xp = np.where(soft, bp[j] + phi_place[phase, SOFT_BIN], xp)
+xk = bk[j, phase]
+xp = np.maximum(0.0, w_zone * w_stage * bp[j] + phi_place[phase, relbin])
 xt = xk + xp
-print(f"xT 分布: total 均值 {xt.mean():.3f}, 毒内软处理 {int(soft.sum())}/{int((~inring).sum())}")
+print(f"xT 分布: total 均值 {xt.mean():.3f}, kill 均值 {xk.mean():.3f}, "
+      f"place 均值 {xp.mean():.3f}")
 
 # ---------- L1: 同时刻 (game,t) 全场平均 → 站位残差 ----------
 bucket_idx = defaultdict(list)

@@ -5,18 +5,21 @@ make_demo.py — 全场所有队伍的 xT 演示 (自包含 HTML, 修正版)
 
 展示: 地图 + 6 圈型 + 实时价值场(随圈) + 全部队伍路线 + 全员 xT 曲线
   - 吃鸡队高亮; 悬停图例可单独高亮某队
-  - xT = V(phase, rel) 相对本场圈(漂移+收缩插值)
+  - xT = 累计击杀(斜率积分) + 排名潜力(β_place+φ, 相对本场圈漂移+收缩插值)
 """
 import json, math, bisect, io, base64
+import numpy as np
 
 RATIO = 24.93
 BUCKET = 5
 REL_BINS = [0.3, 0.7, 1.0, 1.15, 1.6]
 REL_NAMES = ['圈心', '圈内', '圈内边缘', '圈外贴边', '圈外', '远圈外']
-BAND_MULT = [0.3, 0.7, 1.0, 1.15, 1.6, 3.0]
 GAME = "replay/storm point/sp_na_d__g7_5542abdb.json"
 MAP_PNG = "map/storm point.png"
-VRING = "data/v_ring.json"
+BK_NPY = "data/beta_kill.npy"     # 击杀斜率 = 每秒击杀数(按圈, 2D)
+BP_NPY = "data/beta_place.npy"    # 排名偏离
+POS_NPY = "data/points_pos.npy"
+PHI_JSON = "data/phi.json"
 OUT_HTML = "output/demo_xT_all.html"
 OUT_PNG = "output/verify_all.png"
 FALLBACK = ['#e6194b', '#3cb44b', '#ffe119', '#4363d8', '#f58231', '#911eb4',
@@ -73,6 +76,28 @@ def rel_bin(rel):
     return len(REL_BINS)
 
 
+MIN_ZONE_R = 500.0  # 新圈(安全区)半径 < 此值视为无安全区(最后缩到一点), rel 退回毒环、β_p 不衰减
+R0 = 31000.0        # 圈1 新圈(安全区)半径, w_stage 归一化基准
+
+
+def zone_rel(a, c1, r1, c_ring, r_ring):
+    if r1 >= MIN_ZONE_R:
+        return dist(a, c1) / r1
+    return dist(a, c_ring) / max(r_ring, 1.0)
+
+
+def zone_w(rel, r1):
+    if r1 < MIN_ZONE_R:
+        return 1.0
+    return max(0.0, min(1.0, (1.6 - rel) / 0.6))
+
+
+def stage_w(r1):
+    """β_p 圈阶段权重: 圈越大(越早)点位固有价值兑现越低, 缩到决赛圈才全额。
+    w_stage = 1 - r1/R0 → 圈1=0, 圈2≈0.52, 圈3≈0.74, 圈4≈0.87, 圈5≈0.94, 圈6≈1.0。"""
+    return max(0.0, 1.0 - r1 / R0)
+
+
 def main():
     d = json.load(open(GAME, encoding='utf-8'))
     s = d['summary']
@@ -122,24 +147,23 @@ def main():
                           'c0x': c0x, 'c0y': c0y, 'c1x': c1x, 'c1y': c1y,
                           'r0': r2i(st['r0']), 'r1': r2i(st['r1'])})
 
-    # ---- xT 表 + 价值场颜色 ----
-    vr = json.load(open(VRING, encoding='utf-8'))
-    Vtab = {tuple(map(int, k.split(','))): v for k, v in vr['V'].items()}
+    # ---- 点位 xT 模型 (击杀按圈 + 排名偏离 + 圈位排名价值) ----
+    bk = np.load(BK_NPY)          # (NP, 6) 击杀斜率按圈 (击杀/秒)
+    bp = np.load(BP_NPY)          # (NP,) 排名偏离
+    pos_arr = np.load(POS_NPY)
+    phij = json.load(open(PHI_JSON, encoding='utf-8'))['phi_place']
+    PHI = [[phij.get(f"{ph},{rb}", 0.0) for rb in range(6)] for ph in range(6)]
+    NP = len(bp)
+
+    def nearest_idx(ax, ay):
+        return int(np.argmin(np.hypot(pos_arr[:, 0] - ax, pos_arr[:, 1] - ay)))
+
     from matplotlib import colormaps as _cm
-    _cmap = _cm['coolwarm']
-    VGRID = [[Vtab.get((ph, rb)) for rb in range(len(REL_NAMES))] for ph in range(6)]
-    VCOLORS = []
-    for ph in range(6):
-        row = []
-        for rb in range(len(REL_NAMES)):
-            v = VGRID[ph][rb]
-            if v is None:
-                row.append('rgba(0,0,0,0)')
-            else:
-                t = max(0.0, min(1.0, v / 10.0))
-                r, g, b, _ = _cmap(t)
-                row.append(f'rgb({int(r*255)},{int(g*255)},{int(b*255)})')
-        VCOLORS.append(row)
+    _cmap = _cm['YlOrRd']
+    XTRAMP = []
+    for k in range(256):
+        r, g, b, _ = _cmap(0.15 + 0.75 * k / 255)
+        XTRAMP.append(f'rgb({int(r*255)},{int(g*255)},{int(b*255)})')
 
     # ---- 全部队伍轨迹 + xT ----
     meta = {t['teamId']: t for t in s['teams']}
@@ -162,25 +186,41 @@ def main():
         color = mt.get('color') or FALLBACK[i % len(FALLBACK)]
         placement = mt.get('placement', 20)
         tpath = []
+        xk_acc = 0.0
         for b in range(int(dur // BUCKET) + 1):
             tt = b * BUCKET
             if tt > elim:
                 break
             ph, c, r = ring_at(tt)
+            c1, r1 = stages[ph]['c1'], stages[ph]['r1']  # 新圈(安全区)中心/半径
             alive = [pos_at(pl['pts'], pl['ts'], tt) for pl in players
                      if pl['ts'][0] <= tt <= pl['ts'][-1]]
             if not alive:
                 continue
             ax, ay = team_anchor(alive)
-            rel = dist((ax, ay), c) / r
+            rel = zone_rel((ax, ay), c1, r1, c, r)
             rb = rel_bin(rel)
-            V = Vtab.get((ph, rb))
+            pi = nearest_idx(ax, ay)
+            xk_acc += bk[pi][ph] * BUCKET                 # 累计击杀 (单调递增)
+            xp = max(0.0, zone_w(rel, r1) * stage_w(r1) * bp[pi] + PHI[ph][rb])
             ix, iy = w2i(ax, ay)
             tpath.append({'t': tt, 'x': ix, 'y': iy, 'phase': ph + 1, 'rel': rel,
-                          'rel_bin': rb, 'rel_name': REL_NAMES[rb], 'V': V})
+                          'rel_bin': rb, 'rel_name': REL_NAMES[rb],
+                          'V': xk_acc + xp, 'kill': round(xk_acc, 3),
+                          'place': round(xp, 3)})
         teams.append({'id': tid, 'name': name, 'color': color, 'placement': placement,
                       'elim': elim, 'path': tpath})
     teams.sort(key=lambda x: x['placement'])
+
+    # 点位数据 (JS 渲染) + 颜色标尺上限
+    px, py, pb, pk = [], [], [], []
+    for i in range(NP):
+        ix, iy = w2i(pos_arr[i, 0], pos_arr[i, 1])
+        px.append(round(ix, 1)); py.append(round(iy, 1))
+        pb.append(round(float(bp[i]), 4))
+        pk.append([round(float(bk[i][m]), 4) for m in range(6)])
+    all_v = [p['V'] for t in teams for p in t['path'] if p['V'] is not None]
+    YMAX = max(10.0, math.ceil(max(all_v)) if all_v else 10.0)
 
     # 吃鸡队击杀
     kills = []
@@ -232,16 +272,17 @@ def main():
     teams_json = json.dumps(teams)
     wteam_json = json.dumps(wteam)
     kills_json = json.dumps(kills)
-    vgrid_json = json.dumps(VGRID)
-    vcolors_json = json.dumps(VCOLORS)
-    band_mult_json = json.dumps(BAND_MULT)
+    px_json = json.dumps(px); py_json = json.dumps(py)
+    pb_json = json.dumps(pb); pk_json = json.dumps(pk)
+    phi_json = json.dumps(PHI)
+    xtramp_json = json.dumps(XTRAMP)
 
     html = f"""<!DOCTYPE html>
 <html lang="zh-CN"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>全场 xT — {header}</title>
 <style>
-:root{{--bg:#0d0f13;--panel:#161a22;--ink:#e8eaee;--muted:#98a0ab;--accent:#CCFF33;--kill:#ff5252;}}
+:root{{--bg:#0d0f13;--panel:#161a22;--ink:#e8eaee;--muted:#98a0ab;--accent:#CCFF33;--kill:#ff5252;--place:#4da3ff;}}
 *{{box-sizing:border-box;}}
 body{{margin:0;background:var(--bg);color:var(--ink);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;}}
 header{{padding:14px 20px;border-bottom:1px solid #232834;display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap;}}
@@ -269,6 +310,13 @@ header .meta{{color:var(--muted);font-size:12px;}}
 .controls button{{background:#1c2130;color:var(--ink);border:1px solid #2a3142;border-radius:6px;padding:6px 12px;cursor:pointer;font-size:13px;}}
 .controls button:hover{{border-color:#4a5468;}}
 .controls input[type=range]{{flex:1;}}
+.readout{{background:rgba(22,26,34,.9);border:1px solid #2a3142;border-radius:8px;padding:9px 12px;display:flex;flex-wrap:wrap;gap:8px 18px;align-items:baseline;}}
+.readout .team{{font-size:13px;font-weight:600;}}
+.readout .kv{{font-size:11px;color:var(--muted);}}
+.readout .kv b{{font-variant-numeric:tabular-nums;font-size:14px;}}
+.readout .kv.kill b{{color:var(--kill);}}
+.readout .kv.place b{{color:var(--place);}}
+.readout .kv.total b{{color:var(--accent);}}
 .tlist{{display:flex;flex-direction:column;gap:2px;max-height:240px;overflow-y:auto;}}
 .titem{{display:flex;align-items:center;gap:8px;padding:4px 8px;border-radius:6px;cursor:pointer;font-size:12px;color:var(--muted);}}
 .titem:hover{{background:#1c2130;}}
@@ -288,7 +336,7 @@ header .meta{{color:var(--muted);font-size:12px;}}
       <svg class="map" id="map" viewBox="0 0 4096 4096" preserveAspectRatio="xMidYMid meet">
         <g id="world">
           <image href="data:image/png;base64,{map_b64}" x="0" y="0" width="4096" height="4096"/>
-          <g id="valuefield" opacity="0.30"></g>
+          <g id="points"></g>
           <g id="rings"></g>
           <g id="paths"></g>
           <g id="kills"></g>
@@ -301,16 +349,23 @@ header .meta{{color:var(--muted);font-size:12px;}}
         <button id="zreset" title="重置视图">⤢</button>
       </div>
       <div class="mapui">
-        <label><input type="checkbox" id="vftoggle" checked> 价值场(本场刷圈)</label>
+        <label><input type="checkbox" id="vftoggle" checked> 点位 xT(随圈)</label>
         <div class="vlegend"><span>低价值</span><span class="bar"></span><span>高价值</span></div>
       </div>
     </div>
   </div>
   <div class="chartcol">
-    <div class="chart"><h3>全员 xT 曲线 (期望未来分 · 随圈/点位变化)</h3><svg id="chart" viewBox="0 0 360 240" preserveAspectRatio="none"></svg></div>
+    <div class="chart"><h3>全员 xT 曲线 (累计击杀 + 当前排名潜力 · 随圈/点位变化)</h3><svg id="chart" viewBox="0 0 360 240" preserveAspectRatio="none"></svg></div>
     <div class="controls">
       <button id="play">▶ 播放</button>
       <input type="range" id="slider" min="0" max="{dur//BUCKET}" value="0" step="1">
+    </div>
+    <div class="readout" id="readout">
+      <span class="team" id="roTeam">{wteam['name']}</span>
+      <span class="kv kill">击杀 xT_kill <b id="roKill">0</b></span>
+      <span class="kv place">排名 xT_place <b id="roPlace">0</b></span>
+      <span class="kv total">合计 xT <b id="roTotal">0</b></span>
+      <span class="kv">圈 <b id="roPhase">0</b> · rel <b id="roRel">—</b></span>
     </div>
     <div class="chart"><h3>队伍 (按名次 · 悬停高亮)</h3><div class="tlist" id="tlist"></div></div>
   </div>
@@ -321,9 +376,12 @@ const rings={rings_json};
 const stages={stages_json};
 const kills={kills_json};
 const dur={dur};
-const VGRID={vgrid_json};
-const VCOLORS={vcolors_json};
-const BANDMULT={band_mult_json};
+const PX={px_json};
+const PY={py_json};
+const PB={pb_json};
+const PK={pk_json};
+const PHI={phi_json};
+const XTRAMP={xtramp_json};
 const PHASE_COLOR=['#8a93a0','#b58900','#d33682','#6c71c4','#dc322f','#2aa198'];
 
 // 圈
@@ -342,30 +400,40 @@ rings.forEach((r,i)=>{{
   t.textContent='圈'+r.n;rg.appendChild(t);
 }});
 
-// 价值场
-const vf=document.getElementById('valuefield');
-const bandEls=[];
-for(let rb=BANDMULT.length-1;rb>=0;rb--){{
+// 点位 (451 个, 随圈着色: 红=高 xT)
+const ptg=document.getElementById('points');
+const ptEls=[];
+for(let i=0;i<PX.length;i++){{
   const c=document.createElementNS('http://www.w3.org/2000/svg','circle');
-  c.setAttribute('cx',0);c.setAttribute('cy',0);c.setAttribute('r',0);
-  vf.appendChild(c);bandEls.push({{el:c,rb:rb}});
+  c.setAttribute('cx',PX[i]);c.setAttribute('cy',PY[i]);c.setAttribute('r',13);
+  c.setAttribute('fill','#3a3f47');c.setAttribute('stroke','rgba(0,0,0,.4)');c.setAttribute('stroke-width',1);
+  ptg.appendChild(c);ptEls.push(c);
 }}
 function ringAt(t){{
   for(let i=stages.length-1;i>=0;i--){{
     const s=stages[i];
     if(t>=s.t0){{
       const p=Math.min(1,(t-s.t0)/Math.max(s.t1-s.t0,1e-6));
-      return {{phase:i, cx:s.c0x+(s.c1x-s.c0x)*p, cy:s.c0y+(s.c1y-s.c0y)*p, r:s.r0+(s.r1-s.r0)*p}};
+      return {{phase:i, cx:s.c0x+(s.c1x-s.c0x)*p, cy:s.c0y+(s.c1y-s.c0y)*p, r:s.r0+(s.r1-s.r0)*p, c1x:s.c1x, c1y:s.c1y, r1:s.r1}};
     }}
   }}
-  return {{phase:0, cx:stages[0].c0x, cy:stages[0].c0y, r:stages[0].r0}};
+  return {{phase:0, cx:stages[0].c0x, cy:stages[0].c0y, r:stages[0].r0, c1x:stages[0].c1x, c1y:stages[0].c1y, r1:stages[0].r1}};
 }}
-function updateField(t){{
+const RELBINS=[0.3,0.7,1.0,1.15,1.6];
+function relbin(rel){{for(let i=0;i<RELBINS.length;i++)if(rel<RELBINS[i])return i;return RELBINS.length;}}
+const MIN_ZONE_R_IMG=500/{RATIO};
+const R0_IMG=31000/{RATIO};
+function zoneRel(x,y,c1x,c1y,r1,cx,cy,r){{return r1>=MIN_ZONE_R_IMG?Math.hypot(x-c1x,y-c1y)/r1:Math.hypot(x-cx,y-cy)/Math.max(r,1);}}
+function zoneW(rel,r1){{return r1<MIN_ZONE_R_IMG?1.0:Math.max(0,Math.min(1,(1.6-rel)/0.6));}}
+function stageW(r1){{return Math.max(0,1-r1/R0_IMG);}}
+function colorPoint(i,rng){{
+  const rel=zoneRel(PX[i],PY[i],rng.c1x,rng.c1y,rng.r1,rng.cx,rng.cy,rng.r);
+  const xT=PK[i][rng.phase]+Math.max(0,zoneW(rel,rng.r1)*stageW(rng.r1)*PB[i]+PHI[rng.phase][relbin(rel)]);
+  return XTRAMP[Math.max(0,Math.min(255,Math.round(xT/YMAX*255)))];
+}}
+function updatePoints(t){{
   const rng=ringAt(t);
-  bandEls.forEach((b)=>{{
-    b.el.setAttribute('cx',rng.cx);b.el.setAttribute('cy',rng.cy);
-    b.el.setAttribute('r',Math.max(BANDMULT[b.rb]*rng.r,2));b.el.setAttribute('fill',VCOLORS[rng.phase][b.rb]);
-  }});
+  for(let i=0;i<ptEls.length;i++)ptEls[i].setAttribute('fill',colorPoint(i,rng));
 }}
 
 // 全员路线
@@ -400,7 +468,7 @@ spot.appendChild(dot);
 // xT 曲线 (全员)
 const chart=document.getElementById('chart');
 const W=360,H=240;
-const YMAX=10;
+const YMAX={YMAX};
 function X(t){{return t/dur*W;}}
 function Y(v){{return H-8-(v/YMAX)*(H-16);}}
 // 网格
@@ -458,11 +526,18 @@ const slider=document.getElementById('slider');
 function update(i){{
   const t=i*{BUCKET};
   const rng=ringAt(t);
-  updateField(t);
+  updatePoints(t);
   cur.setAttribute('x1',X(t));cur.setAttribute('x2',X(t));
   const wt={wteam_json};
   const p=wt.path.find(q=>Math.abs(q.t-t)<=2)||wt.path[0];
-  if(p){{dot.setAttribute('cx',p.x);dot.setAttribute('cy',p.y);}}
+  if(p){{
+    dot.setAttribute('cx',p.x);dot.setAttribute('cy',p.y);
+    document.getElementById('roKill').textContent = p.kill.toFixed(2);
+    document.getElementById('roPlace').textContent = p.place.toFixed(2);
+    document.getElementById('roTotal').textContent = p.V.toFixed(2);
+    document.getElementById('roPhase').textContent = p.phase;
+    document.getElementById('roRel').textContent = p.rel.toFixed(2);
+  }}
   slider.value=i;
 }}
 let timer=null,playing=false;
@@ -508,7 +583,7 @@ function zoomBy(f){{
 document.getElementById('zin').onclick=()=>zoomBy(1.5);
 document.getElementById('zout').onclick=()=>zoomBy(1/1.5);
 document.getElementById('zreset').onclick=()=>{{scale=1;tx=0;ty=0;applyT();}};
-document.getElementById('vftoggle').onchange=(e)=>vf.setAttribute('opacity', e.target.checked?0.30:0);
+document.getElementById('vftoggle').onchange=(e)=>ptg.setAttribute('opacity', e.target.checked?1:0);
 
 update(0);
 </script></body></html>"""
