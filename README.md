@@ -5,7 +5,7 @@
 
 ## 当前状态
 
-- **xT 模型暂时稳定**：击杀通道 = 点位×圈的每秒击杀数（斜率），沿轨迹累计积分（单调递增、换点只改斜率不清零）；排名通道 = β_p_place + φ_place（非折现 γ=1.0 线性解、非负），其中 β_p_place 再拆成「掩体/地形 + 转点/连通」两个子项（纯拆解，粗块转移前瞻递归），并在应用时乘两个权重——$w_{\mathrm{zone}}$（圈外衰减）+ $w_{\mathrm{stage}}$（圈阶段递增，早期圈压低点位固有价值）。6 档 `rel_bin`、速度锚点（守点优先）都定下来了，可作为点位价值的基线继续用。
+- **xT 模型暂时稳定**：击杀通道 = 点位×圈的每秒击杀数（斜率），沿轨迹累计积分（单调递增、换点只改斜率不清零）；排名通道 =β_p_place + φ_place（非折现 γ=1.0 线性解、非负），其中 β_p_place 再拆成「掩体/地形 + 转点/连通」两个子项（纯拆解，粗块转移前瞻递归），并在应用时乘两个权重——$w_{\mathrm{zone}}$（圈外衰减）+ $w_{\mathrm{stage}}$（圈阶段递增，早期圈压低点位固有价值）。6 档 `rel_bin`、速度锚点（守点优先）都定下来了，可作为点位价值的基线继续用。
 - **IGL 指挥能力评定仍非常初步**：现在的 L1 站位 / L2 兑现只是第一版尝试，如何真正从 xT 里剥离出「指挥能力」还需要进一步改善——圈刷新后的转移决策、残差口径、与赛果回测校准等方向都还没做扎实。
 - **粗块合并暂缓**：点位仍是 451 个细点；`scripts/viz/coarse_blocks.py` 可单独预览粗块合并效果，等观察覆盖/稀疏性后再决定是否降参。
 
@@ -24,7 +24,7 @@ $$
 **第 1 步** — 点位 $p$ 在第 $m$ 圈的历史击杀强度，用**每秒击杀数（斜率）**刻画：
 
 $$
-\mathrm{kill\\_slope}(p, m) = \frac{K(p, m)}{T(p, m)}
+\mathrm{kill\_slope}(p, m) = \frac{K(p, m)}{T(p, m)}
 $$
 
 $$
@@ -42,25 +42,25 @@ $$
 **第 2 步** — 队伍轨迹上的**累计击杀**（单调递增）：
 
 $$
-\mathrm{xT_{kill}}(t) = \int_0^t \mathrm{kill\\_slope}\big(p(\tau), m(\tau)\big)\,d\tau
-\;\approx\;\sum_{k\,:\,t_k \le t} \mathrm{kill\\_slope}(p_k, m_k)\cdot\Delta t
+\mathrm{xT_{kill}}(t) = \int_0^t \mathrm{kill\_slope}\big(p(\tau), m(\tau)\big)\,d\tau
+\;\approx\;\sum_{k\,:\,t_k \le t} \mathrm{kill\_slope}(p_k, m_k)\cdot\Delta t
 $$
 
-换点只让被积函数里的斜率从 $\mathrm{kill\\_slope}(p_a,m)$ 跳到 $\mathrm{kill\\_slope}(p_b,m)$，已经累计的部分**不清零**。
+换点只让被积函数里的斜率从 $\mathrm{kill\_slope}(p_a,m)$ 跳到 $\mathrm{kill\_slope}(p_b,m)$，已经累计的部分**不清零**。
 
-> **击杀守恒（自检）**：全量 59 场对斜率积分 $\sum \mathrm{slope}\cdot\Delta t = 3599.0$，等于真实击杀总数 3599，误差 0.000%。$\mathrm{kill\\_slope}$ 实测 $0\sim0.30$ 击杀/秒（最热 ≈ 18 头/分钟）。
+> **击杀守恒（自检）**：全量 59 场对斜率积分 $\sum \mathrm{slope}\cdot\Delta t = 3599.0$，等于真实击杀总数 3599，误差 0.000%。$\mathrm{kill\_slope}$ 实测 $0\sim0.30$ 击杀/秒（最热 ≈ 18 头/分钟）。
 
 ### 排名通道：非折现 Bellman + 非负
 
 $$
-\mathrm{xT_{place}}(p, m) = \max\Big(0,\ w_{\mathrm{zone}}(r)\cdot w_{\mathrm{stage}}(m)\cdot\beta_p^{\mathrm{place}} + \varphi_m^{\mathrm{place}}\big(\mathrm{rel\\_bin}(r)\big)\Big),
+\mathrm{xT_{place}}(p, m) = \max\Big(0,\ w_{\mathrm{zone}}(r)\cdot w_{\mathrm{stage}}(m)\cdot\beta_p^{\mathrm{place}} + \varphi_m^{\mathrm{place}}\big(\mathrm{rel\_bin}(r)\big)\Big),
 \qquad
-r = \frac{\\|a - c_m^{\mathrm{new}}\\|}{R_m^{\mathrm{new}}}
+r = \frac{\|a - c_m^{\mathrm{new}}\|}{R_m^{\mathrm{new}}}
 $$
 
-$a$ = 速度锚点（过去 15s 位移 < 400 单位的「踩点/守家」玩家质心；全队都在动时退回最靠拢两名的质心）。
+$a$ = 速度锚点（过去 15s 位移 < 400 单位的「踩点/守家」玩家质心；全队都在动时退回最靠拢两名的质心）。锚点只用**在场玩家**——被击杀后、复活前的空窗期（`playerKilled` 之后到轨迹恢复之间）该玩家算不在场，就按剩下的 2 人/1 人轨迹记，不把死人插值进去。
 
-- $r$ 用**新圈（安全区）**基准：$c_m^{\mathrm{new}}$ = 该圈 `finishedClosing` 的中心、$R_m^{\mathrm{new}}$ = 该圈 `endRadius`（不是正在缩的毒环半径）。圈刷新后新圈才决定「哪里是圈内」，旧圈（毒环）不再算。
+- $r$ 用**新圈（安全区）**基准：$c_m^{\mathrm{new}}$ = 该圈 `finishedClosing` 的中心、$R_m^{\mathrm{new}}$ = 该圈 `endRadius`（不是正在缩的毒环半径）。圈刷新后新圈才决定「哪里是圈内」，旧圈（毒环）不再算。**最后圈例外**：最后圈 `endRadius≈1`（缩成一点、无安全区），此时分母**冻结在最后圈 `startRadius`（≈2000）**、中心取毒环中心——不让分母随收缩缩到 1 导致 $r$ 爆炸、全员挤进「远圈外」。
 - $w_{\mathrm{zone}}(r)$ — **β_p 圈外平滑衰减权重**：$r\le 1$（新圈内）全额 $=1$；$r$ 从 $1\to1.6$ 线性降到 $0$；$r\ge1.6$（远圈外）归零。理由：点位固有排名价值 $\beta_p$ 只在点位被圈覆盖时才兑现，圈外站不住。**最后圈例外**：`endRadius < 500` 时没有安全区（毒圈缩到一点），$w_{\mathrm{zone}}=1$ 不衰减。
 - $w_{\mathrm{stage}}(m)$ — **β_p 圈阶段权重**：$= 1 - R_m^{\mathrm{new}}/R_0$（$R_0=31000$ = 圈1 半径），随圈从 0 爬到 1（圈1=0、圈2≈0.52、圈3≈0.74、圈4≈0.87、圈5≈0.94、圈6≈1.0）。理由：点位固有价值只在圈缩到足以「争抢」该点时才兑现——早期圈半径巨大、「圈内」形同虚设，站在一个离决赛圈很远的高 β_p 点不该全额记 β_p；只有圈缩到决赛圈附近，站哪才真正决定名次。这是对 $w_{\mathrm{zone}}$ 的**时间维**补充（前者管「圈内/外」，这个管「圈缩到哪一步」）。
 
@@ -76,7 +76,7 @@ $$
 
 - $V(s)$ — 到访 $s$ 的采样行数；$D(s)$ — 其中被淘汰的行数；$PL(s)$ — 这些被淘汰行拿到的排名分之和；$T(s,s')$ — 从 $s$ 存活转移到 $s'$ 的行数。
 
-> **采样行**：`data/long_table.jsonl` 里的一行 = 一支队伍在一个 5 秒时间步的状态快照（每 5 秒 × 每支活着的队伍写一行，全量 59 场共 220312 行）。所以 $V(s)$ = 队伍在「第 $m$ 圈 + 位置档 $b$」被观测到的 5 秒快照总数，$D(s)$ = 其中恰好这一步被淘汰的快照数。
+> **采样行**：`data/long_table.jsonl` 里的一行 = 一支队伍在一个 5 秒时间步的状态快照（每 5 秒 × 每支活着的队伍写一行，全量 59 场共 216828 行）。所以 $V(s)$ = 队伍在「第 $m$ 圈 + 位置档 $b$」被观测到的 5 秒快照总数，$D(s)$ = 其中恰好这一步被淘汰的快照数。
 
 非折现（$\gamma=1.0$）Bellman 方程写成一阶线性系统（$M[s][s']=(1-h(s))\,P(s'|s)$）：
 
@@ -93,22 +93,22 @@ $$
 **② $\beta_p^{\mathrm{place}}$ — 点位排名偏离（ridge 回归 + 队伍固定效应）**
 
 $$
-\min_{\beta,\delta}\ \Big\\|\, y - X\beta - Z\delta \,\Big\\|_2^2 + \lambda\,\\|\beta\\|_2^2,\qquad \lambda = 3
+\min_{\beta,\delta}\ \Big\|\, y - X\beta - Z\delta \,\Big\|_2^2 + \lambda\,\|\beta\|_2^2,\qquad \lambda = 3
 $$
 
 $$
-y_i = \underbrace{\mathrm{placement\\_pts}_i}_{\text{队 }i\text{ 最终排名分}}
- - \underbrace{\frac{1}{T_i}\sum_{t} \varphi_{m(t)}^{\mathrm{place}}\big(\mathrm{rel\\_bin}(t)\big)}_{\text{整场圈位期望排名（用 }\varphi\text{ 自身当基线）}}
+y_i = \underbrace{\mathrm{placement\_pts}_i}_{\text{队 }i\text{ 最终排名分}}
+ - \underbrace{\frac{1}{T_i}\sum_{t} \varphi_{m(t)}^{\mathrm{place}}\big(\mathrm{rel\_bin}(t)\big)}_{\text{整场圈位期望排名（用 }\varphi\text{ 自身当基线）}}
 $$
 
 - $x_{i,p}$ — 队伍 $i$ 在第 $p$ 个点位的停留时间占比（`extract_stays` 的 stay 段；排除落地/搜刮的前 120s）。
 - $Z\delta$ — 队伍固定效应（吸收队伍强弱，让 $\beta_p$ 只反映点位本身的偏离）。
 - 目标用 $\varphi$ 自身当圈位基线，保证 $\beta_p$ 的零点跟 $\varphi$ 同口径。
 
-**③ $\mathrm{rel\\_bin}(r)$ — 圈相对位置分 6 档**（阈值 $\theta=[0.3,0.7,1.0,1.15,1.6]$）：
+**③ $\mathrm{rel\_bin}(r)$ — 圈相对位置分 6 档**（阈值 $\theta=[0.3,0.7,1.0,1.15,1.6]$）：
 
 $$
-\mathrm{rel\\_bin}(r)=\min\big\\{k : r < \theta_k\big\\}
+\mathrm{rel\_bin}(r)=\min\big\{k : r < \theta_k\big\}
 $$
 
 对应「圈心 / 圈内 / 圈内边缘 / 圈外贴边 / 圈外 / 远圈外」。**毒里不硬记 0**：非折现口径下毒区档位本身有「贴着圈边、还有机会转进去」的小正数期望排名分。
@@ -144,7 +144,7 @@ $$
 
 > **这是纯拆解**：$\beta^{\mathrm{terrain}}+\beta^{\mathrm{rotation}}=\beta^{\mathrm{place}}$ 恒成立（校验误差 $2.2\times10^{-16}$），模型预测**完全不变**，只是把「转点价值」从 β 里显式标出来。实测 $\beta^{\mathrm{rotation}}\in[-0.88,+1.07]$、$\beta^{\mathrm{terrain}}\in[-1.80,+2.37]$，二者相关 $-0.09$（基本正交——两个子项各管一维：地形价值和连通性价值不再互相挤占）。
 
-> **实测值域**：$\beta_p^{\mathrm{place}}\in[-1.53,+3.05]$（= $\beta^{\mathrm{terrain}}\in[-1.80,+2.37]$ + $\beta^{\mathrm{rotation}}\in[-0.88,+1.07]$），$\varphi_m^{\mathrm{place}}\in[1.49,8.10]$；$\mathrm{kill\\_slope}$ 与 $\beta_p^{\mathrm{place}}$ 的相关系数 $+0.125$（两通道分离度高）。
+> **实测值域**：$\beta_p^{\mathrm{place}}\in[-1.59,+2.89]$（= $\beta^{\mathrm{terrain}}\in[-1.63,+2.42]$ + $\beta^{\mathrm{rotation}}\in[-0.79,+1.26]$），$\varphi_m^{\mathrm{place}}\in[2.92,8.23]$；$\mathrm{kill\_slope}$ 与 $\beta_p^{\mathrm{place}}$ 的相关系数 $+0.066$（两通道分离度高）。
 
 > **为什么 φ 现在还留着（数据瓶颈 → 长期方向）**：φ 的「圈 + 相对位置」本质上是个**暂时、粗略的代理**——真正决定点位价值的应是「点位之间的连通性」（从这点能转到哪些点、那些点又值多少）。要做**点对点转点迭代**（在 $451\times451$ 的转移矩阵 $P(p'|p)$ 上跑 Bellman），需要每个点对都有足够转移样本；而 59 场只有约 2638 个 stay 段，点对点转移极稀疏（绝大多数点对从未观测到转移），硬算只会是噪声。所以当前折成两层：**β_rotation 先在 85 个粗块上做连通性前瞻递归**（把样本聚合到粗块、转移才勉强稳），φ 继续兜住「圈缩」这条跨场可统计的宏观通道。**长期方向**：数据量上去（几十上百场、点对点转移密度达标）后，把粗块递归细化到**点位级连通性迭代**
 

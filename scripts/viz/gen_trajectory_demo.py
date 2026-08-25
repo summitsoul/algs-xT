@@ -12,6 +12,7 @@ xT(p, 圈) = xT_kill(p, 圈) + xT_place(p, 圈); kill=该点该圈每秒击杀�
 (非折现, 毒里不再硬记0, 非负)。数据全部内联。
 """
 import json, math, bisect, base64, io, os, re, sys
+from collections import defaultdict
 import numpy as np
 from PIL import Image
 
@@ -60,13 +61,16 @@ def dist(a, b):
 
 MIN_ZONE_R = 500.0  # 新圈(安全区)半径 < 此值视为无安全区(最后缩到一点), rel 退回毒环、β_p 不衰减
 R0 = 31000.0        # 圈1 新圈(安全区)半径, w_stage 归一化基准
+GAP_THRESHOLD = 60.0  # 尾端孤点判定: 末段 gap 超此值 => 死亡/断线后补记的清理快照, 丢弃
 
 
-def zone_rel(a, c1, r1, c_ring, r_ring):
-    """新圈基准 rel(圈内/圈外判据)。常规圈用新圈(安全区)中心/半径; 最后圈(r1≈0)退回正在缩的毒环。"""
+def zone_rel(a, c1, r1, c_ring, r_ring_start):
+    """新圈基准 rel(圈内/圈外判据)。常规圈(r1>=MIN_ZONE_R)用新圈(安全区)中心/半径;
+    最后圈(r1<MIN_ZONE_R, 无安全区)退回毒环中心 + 毒环起始半径(冻结在开始收缩时的大小,
+    不随收缩缩小——否则分母→1、rel 爆炸、所有人挤进远圈外)。"""
     if r1 >= MIN_ZONE_R:
         return dist(a, c1) / r1
-    return dist(a, c_ring) / max(r_ring, 1.0)
+    return dist(a, c_ring) / max(r_ring_start, 1.0)
 
 
 def zone_w(rel, r1):
@@ -122,6 +126,21 @@ def pos_at(pts, ts, t):
     return (a['x'] + frac * (b['x'] - a['x']), a['y'] + frac * (b['y'] - a['y']))
 
 
+def alive_at(pl, t):
+    """t 时刻该玩家是否在场。用 playerKilled 当死亡真相: 被击杀后、直到轨迹恢复(复活)之间
+    算不在场, 排除出 alive 集——复活空窗期按剩下的人记锚点, 不把死人插值进去。"""
+    ts = pl['ts']
+    if not ts or t < ts[0] or t > ts[-1]:
+        return False
+    for D in pl['deaths']:
+        if D >= t:
+            break
+        i = bisect.bisect_right(ts, D)
+        if i >= len(ts) or ts[i] > t:
+            return False  # 死后到 t 尚未复活
+    return True
+
+
 # ---------- 解析比赛 ----------
 d = json.load(open(GAME, encoding='utf-8'))
 s = d['summary']
@@ -156,6 +175,17 @@ def ring_at(t):
     return 0, st['c0'], st['r0']
 
 
+# 每玩家死亡时刻 (playerKilled.target -> 玩家名 -> [tsGame, ...] 升序)
+deaths = defaultdict(list)
+for e in d['events']:
+    if e.get('category') == 'playerKilled':
+        tg = e.get('target', {})
+        nm = tg.get('playerName') or tg.get('name')
+        if nm:
+            deaths[nm].append(e['tsGame'])
+for nm in deaths:
+    deaths[nm].sort()
+
 teams = {}
 for t in d['pathing']['teams']:
     tid = t['teamId']
@@ -165,7 +195,11 @@ for t in d['pathing']['teams']:
         if not pts:
             continue
         pts.sort(key=lambda p: p['tsGame'])
-        players.append({'ts': [p['tsGame'] for p in pts], 'pts': pts})
+        # 丢弃「死亡/断线后补记的尾端孤点」: 末段 gap 过大说明前面已死, 此点是清理快照(非真实位置)。
+        while len(pts) >= 2 and pts[-1]['tsGame'] - pts[-2]['tsGame'] > GAP_THRESHOLD:
+            pts.pop()
+        players.append({'ts': [p['tsGame'] for p in pts], 'pts': pts,
+                        'deaths': deaths.get(pl.get('playerName'), [])})
         max_last = max(max_last, pts[-1]['tsGame'])
     teams[tid] = {'players': players, 'elim': min(max_last, dur)}
 for st in s['teams']:
@@ -178,7 +212,7 @@ for st in s['teams']:
 def xT_of(x, y, t):
     ph, (cx, cy), r = ring_at(t)
     c1, r1 = stages[ph]['c1'], stages[ph]['r1']    # 新圈(安全区)中心/半径
-    rel = zone_rel((x, y), c1, r1, (cx, cy), r)
+    rel = zone_rel((x, y), c1, r1, (cx, cy), stages[ph]['r0'])
     j = int(np.argmin(np.hypot(pos_arr[:, 0] - x, pos_arr[:, 1] - y)))
     slope = bk[j][ph]                              # 击杀斜率: 每秒击杀数(按当前圈分档)
     xp = max(0.0, zone_w(rel, r1) * stage_w(r1) * bp[j] + pp[(ph, rel_bin(rel))])  # 排名: β_p 圈外衰减 + 圈阶段权重 + 非折现 + 非负
@@ -195,8 +229,7 @@ for tid, team in teams.items():
         t = b * BUCKET
         if team['elim'] < t:
             break
-        alive = [pl for pl in team['players']
-                 if pl['ts'][0] <= t <= pl['ts'][-1]]
+        alive = [pl for pl in team['players'] if alive_at(pl, t)]
         if not alive:
             continue
         a = team_anchor(alive, t)
@@ -235,7 +268,7 @@ vmax = {'total': 0.0, 'kill': float(bk.max()), 'place': 0.0}
 for m in order:
     c1, r1 = stages[m]['c1'], stages[m]['r1']
     for i in range(NP):
-        rel = zone_rel((pos_arr[i, 0], pos_arr[i, 1]), c1, r1, c1, r1)
+        rel = zone_rel((pos_arr[i, 0], pos_arr[i, 1]), c1, r1, c1, stages[m]['r0'])
         xp = max(0.0, zone_w(rel, r1) * stage_w(r1) * bp[i] + pp[(m, rel_bin(rel))])
         vmax['place'] = max(vmax['place'], xp)
         vmax['total'] = max(vmax['total'], bk[i][m] + xp)

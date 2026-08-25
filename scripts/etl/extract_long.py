@@ -22,6 +22,8 @@ MIN_ZONE_R = 500.0  # 新圈(安全区)半径 < 此值视为无安全区(最后�
 R0 = 31000.0        # 圈1 新圈(安全区)半径, w_stage 归一化基准
 VEL_WINDOW = 15    # 速度窗口(秒): 判"踩点/守家"看过去15s位移
 STAY_VEL = 400     # 位移 <400 单位 => 算踩点; 否则算出去动/转点
+GAP_THRESHOLD = 60.0  # 尾端孤点判定: 末段 gap 超此值 => 死亡/断线后补记的清理快照, 丢弃
+                      # (正常死亡盒 lag ≤60s; banner过期/游戏结束清理 ≥79s; 复活后轨迹密集、尾端 gap 极小)
 GLOB = "replay/storm point/*.json"
 OUT = "data/long_table.jsonl"
 META = "data/long_table.meta.json"
@@ -31,12 +33,13 @@ def dist(a, b):
     return math.hypot(a[0] - b[0], a[1] - b[1])
 
 
-def zone_rel(a, c1, r1, c_ring, r_ring):
+def zone_rel(a, c1, r1, c_ring, r_ring_start):
     """新圈基准 rel(圈内/圈外判据)。常规圈(r1>=MIN_ZONE_R)用新圈(安全区)中心/半径;
-    最后圈(r1≈0, 无安全区)退回正在缩的毒环。"""
+    最后圈(r1<MIN_ZONE_R, 无安全区)退回毒环中心 + 毒环起始半径(冻结在开始收缩时的大小,
+    不随收缩缩小——否则分母→1、rel 爆炸、所有人挤进远圈外)。"""
     if r1 >= MIN_ZONE_R:
         return dist(a, c1) / r1
-    return dist(a, c_ring) / max(r_ring, 1.0)
+    return dist(a, c_ring) / max(r_ring_start, 1.0)
 
 
 def zone_w(rel, r1):
@@ -94,6 +97,22 @@ def pos_at(pts, ts, t):
     return (a['x'] + frac * (b['x'] - a['x']), a['y'] + frac * (b['y'] - a['y']))
 
 
+def alive_at(pl, t):
+    """t 时刻该玩家是否在场。用 playerKilled 当死亡真相: 玩家被击杀后、直到轨迹恢复(复活)
+    之间算不在场, 排除出 alive 集——复活空窗期就按剩下的 2 人/1 人轨迹记锚点, 不把死人插值进去。"""
+    ts = pl['ts']
+    if not ts or t < ts[0] or t > ts[-1]:
+        return False
+    for D in pl['deaths']:
+        if D >= t:
+            break
+        # 死亡后第一个轨迹点 = 复活点(死亡点本身 ≤ D, bisect_right 正好跳过它)
+        i = bisect.bisect_right(ts, D)
+        if i >= len(ts) or ts[i] > t:
+            return False  # 死后到 t 尚未复活
+    return True
+
+
 def rel_bin(rel):
     for i, th in enumerate(REL_BINS):
         if rel < th:
@@ -137,6 +156,17 @@ def extract_game(path):
         st = stages[order[0]]
         return 0, st['c0'], st['r0']
 
+    # 每玩家死亡时刻 (playerKilled.target -> 玩家名 -> [tsGame, ...] 升序)
+    deaths = defaultdict(list)
+    for e in d['events']:
+        if e.get('category') == 'playerKilled':
+            tg = e.get('target', {})
+            nm = tg.get('playerName') or tg.get('name')
+            if nm:
+                deaths[nm].append(e['tsGame'])
+    for nm in deaths:
+        deaths[nm].sort()
+
     # 队伍: 淘汰时间 + 名次 + 队名 + 轨迹
     teams = {}
     for t in d['pathing']['teams']:
@@ -147,7 +177,12 @@ def extract_game(path):
             if not pts:
                 continue
             pts.sort(key=lambda p: p['tsGame'])
-            players.append({'ts': [p['tsGame'] for p in pts], 'pts': pts})
+            # 丢弃「死亡/断线后补记的尾端孤点」: 末段 gap 过大说明前面已死, 此点是清理快照(非真实位置)。
+            # 复活后的轨迹是密集的(尾端 gap 极小), 不会被误删。
+            while len(pts) >= 2 and pts[-1]['tsGame'] - pts[-2]['tsGame'] > GAP_THRESHOLD:
+                pts.pop()
+            players.append({'ts': [p['tsGame'] for p in pts], 'pts': pts,
+                            'deaths': deaths.get(pl.get('playerName'), [])})
             max_last = max(max_last, pts[-1]['tsGame'])
         teams[tid] = {'players': players, 'elim': min(max_last, dur)}
 
@@ -176,12 +211,11 @@ def extract_game(path):
         for tid, team in teams.items():
             if team['elim'] < t:
                 continue
-            alive = [pl for pl in team['players']
-                     if pl['ts'][0] <= t <= pl['ts'][-1]]
+            alive = [pl for pl in team['players'] if alive_at(pl, t)]
             if not alive:
                 continue
             a = team_anchor(alive, t)
-            rel = zone_rel(a, c1, r1, c, r)
+            rel = zone_rel(a, c1, r1, c, stages[ph]['r0'])
             row = {'game': name, 'region': region, 'team': tid,
                    'team_name': team.get('name', f"T{tid}"),
                    'b': b, 't': t, 'phase': ph, 'rel': rel,
@@ -195,15 +229,14 @@ def extract_game(path):
                 rows.append(row)
                 continue
 
-            alive_next = [pl for pl in team['players']
-                          if pl['ts'][0] <= t_next <= pl['ts'][-1]]
-            if not alive_next:  # 理论上存活队不会发生(elim>=t_next 必有队员覆盖 t_next)
+            alive_next = [pl for pl in team['players'] if alive_at(pl, t_next)]
+            if not alive_next:  # 空窗期(全队暂时都在死亡/复活 gap)无锚点可记, 跳过该桶
                 continue
             an = team_anchor(alive_next, t_next)
             row['died'] = 0
             row['placement_pts'] = 0
             row['next_phase'] = ph_next
-            row['next_rel_bin'] = rel_bin(zone_rel(an, c1n, r1n, c_next, r_next))
+            row['next_rel_bin'] = rel_bin(zone_rel(an, c1n, r1n, c_next, stages[ph_next]['r0']))
             row['next_ax'] = an[0]
             row['next_ay'] = an[1]
             row['next_cx'] = c_next[0]

@@ -91,6 +91,23 @@ def solve_place():
 
 phi_place = solve_place()
 
+# 补齐 φ 未观测状态: 同圈缺失档直接取相邻「更靠圈内」一档的值(不插值)。
+# 典型空缺=圈6「圈外贴边」(rel∈[1.0,1.15), 决赛圈半径 2000 时的薄环带)——那是「勉强进圈
+# 躲子弹」的瞬态位置, 队伍擦一下就进圈/被打掉, 不驻留, 故 59 场无一条采样; 它与「圈内边缘」
+# (rel∈[0.7,1.0))只有一墙之隔, 就按圈内边缘记。补上让 φ 对全部 (圈, rel_bin) 状态都有定义。
+_NPH = max(s[0] for s in states) + 1
+_NRB = len(REL_BINS) + 1
+for _ph in range(_NPH):
+    for _b in range(_NRB):
+        if (_ph, _b) in phi_place:
+            continue
+        _lo = next((bb for bb in range(_b - 1, -1, -1) if (_ph, bb) in phi_place), None)
+        _hi = next((bb for bb in range(_b + 1, _NRB) if (_ph, bb) in phi_place), None)
+        if _lo is not None:
+            phi_place[(_ph, _b)] = phi_place[(_ph, _lo)]   # 优先取更靠圈内的一档
+        elif _hi is not None:
+            phi_place[(_ph, _b)] = phi_place[(_ph, _hi)]
+
 # ---- 2) E_final 分解 (圈位期望, 供 igl_two_layer 的 L2 兑现复用) ----
 tg = defaultdict(list)
 final_k = defaultdict(float)
