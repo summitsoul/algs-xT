@@ -24,7 +24,7 @@ $$
 **第 1 步** — 点位 $p$ 在第 $m$ 圈的历史击杀强度，用**每秒击杀数（斜率）**刻画：
 
 $$
-\mathrm{kill\_slope}(p, m) = \frac{K(p, m)}{T(p, m)}
+\mathrm{kill\\_slope}(p, m) = \frac{K(p, m)}{T(p, m)}
 $$
 
 $$
@@ -42,20 +42,20 @@ $$
 **第 2 步** — 队伍轨迹上的**累计击杀**（单调递增）：
 
 $$
-\mathrm{xT_{kill}}(t) = \int_0^t \mathrm{kill\_slope}\big(p(\tau), m(\tau)\big)\,d\tau
-\;\approx\;\sum_{k\,:\,t_k \le t} \mathrm{kill\_slope}(p_k, m_k)\cdot\Delta t
+\mathrm{xT_{kill}}(t) = \int_0^t \mathrm{kill\\_slope}\big(p(\tau), m(\tau)\big)\,d\tau
+\;\approx\;\sum_{k\,:\,t_k \le t} \mathrm{kill\\_slope}(p_k, m_k)\cdot\Delta t
 $$
 
-换点只让被积函数里的斜率从 $\mathrm{kill\_slope}(p_a,m)$ 跳到 $\mathrm{kill\_slope}(p_b,m)$，已经累计的部分**不清零**。
+换点只让被积函数里的斜率从 $\mathrm{kill\\_slope}(p_a,m)$ 跳到 $\mathrm{kill\\_slope}(p_b,m)$，已经累计的部分**不清零**。
 
-> **击杀守恒（自检）**：全量 59 场对斜率积分 $\sum \mathrm{slope}\cdot\Delta t = 3599.0$，等于真实击杀总数 3599，误差 0.000%。$\mathrm{kill\_slope}$ 实测 $0\sim0.30$ 击杀/秒（最热 ≈ 18 头/分钟）。
+> **击杀守恒（自检）**：全量 59 场对斜率积分 $\sum \mathrm{slope}\cdot\Delta t = 3599.0$，等于真实击杀总数 3599，误差 0.000%。$\mathrm{kill\\_slope}$ 实测 $0\sim0.30$ 击杀/秒（最热 ≈ 18 头/分钟）。
 
 ### 排名通道：非折现 Bellman + 非负
 
 $$
-\mathrm{xT_{place}}(p, m) = \max\Big(0,\ w_{\mathrm{zone}}(r)\cdot w_{\mathrm{stage}}(m)\cdot\beta_p^{\mathrm{place}} + \varphi_m^{\mathrm{place}}\big(\mathrm{rel\_bin}(r)\big)\Big),
+\mathrm{xT_{place}}(p, m) = \max\Big(0,\ w_{\mathrm{zone}}(r)\cdot w_{\mathrm{stage}}(m)\cdot\beta_p^{\mathrm{place}} + \varphi_m^{\mathrm{place}}\big(\mathrm{rel\\_bin}(r)\big)\Big),
 \qquad
-r = \frac{\|a - c_m^{\mathrm{new}}\|}{R_m^{\mathrm{new}}}
+r = \frac{\\|a - c_m^{\mathrm{new}}\\|}{R_m^{\mathrm{new}}}
 $$
 
 $a$ = 速度锚点（过去 15s 位移 < 400 单位的「踩点/守家」玩家质心；全队都在动时退回最靠拢两名的质心）。
@@ -93,22 +93,22 @@ $$
 **② $\beta_p^{\mathrm{place}}$ — 点位排名偏离（ridge 回归 + 队伍固定效应）**
 
 $$
-\min_{\beta,\delta}\ \Big\|\, y - X\beta - Z\delta \,\Big\|_2^2 + \lambda\,\|\beta\|_2^2,\qquad \lambda = 3
+\min_{\beta,\delta}\ \Big\\|\, y - X\beta - Z\delta \,\Big\\|_2^2 + \lambda\,\\|\beta\\|_2^2,\qquad \lambda = 3
 $$
 
 $$
-y_i = \underbrace{\mathrm{placement\_pts}_i}_{\text{队 }i\text{ 最终排名分}}
- - \underbrace{\frac{1}{T_i}\sum_{t} \varphi_{m(t)}^{\mathrm{place}}\big(\mathrm{rel\_bin}(t)\big)}_{\text{整场圈位期望排名（用 }\varphi\text{ 自身当基线）}}
+y_i = \underbrace{\mathrm{placement\\_pts}_i}_{\text{队 }i\text{ 最终排名分}}
+ - \underbrace{\frac{1}{T_i}\sum_{t} \varphi_{m(t)}^{\mathrm{place}}\big(\mathrm{rel\\_bin}(t)\big)}_{\text{整场圈位期望排名（用 }\varphi\text{ 自身当基线）}}
 $$
 
 - $x_{i,p}$ — 队伍 $i$ 在第 $p$ 个点位的停留时间占比（`extract_stays` 的 stay 段；排除落地/搜刮的前 120s）。
 - $Z\delta$ — 队伍固定效应（吸收队伍强弱，让 $\beta_p$ 只反映点位本身的偏离）。
 - 目标用 $\varphi$ 自身当圈位基线，保证 $\beta_p$ 的零点跟 $\varphi$ 同口径。
 
-**③ $\mathrm{rel\_bin}(r)$ — 圈相对位置分 6 档**（阈值 $\theta=[0.3,0.7,1.0,1.15,1.6]$）：
+**③ $\mathrm{rel\\_bin}(r)$ — 圈相对位置分 6 档**（阈值 $\theta=[0.3,0.7,1.0,1.15,1.6]$）：
 
 $$
-\mathrm{rel\_bin}(r)=\min\big\{k : r < \theta_k\big\}
+\mathrm{rel\\_bin}(r)=\min\big\\{k : r < \theta_k\big\\}
 $$
 
 对应「圈心 / 圈内 / 圈内边缘 / 圈外贴边 / 圈外 / 远圈外」。**毒里不硬记 0**：非折现口径下毒区档位本身有「贴着圈边、还有机会转进去」的小正数期望排名分。
@@ -144,7 +144,7 @@ $$
 
 > **这是纯拆解**：$\beta^{\mathrm{terrain}}+\beta^{\mathrm{rotation}}=\beta^{\mathrm{place}}$ 恒成立（校验误差 $2.2\times10^{-16}$），模型预测**完全不变**，只是把「转点价值」从 β 里显式标出来。实测 $\beta^{\mathrm{rotation}}\in[-0.88,+1.07]$、$\beta^{\mathrm{terrain}}\in[-1.80,+2.37]$，二者相关 $-0.09$（基本正交——两个子项各管一维：地形价值和连通性价值不再互相挤占）。
 
-> **实测值域**：$\beta_p^{\mathrm{place}}\in[-1.53,+3.05]$（= $\beta^{\mathrm{terrain}}\in[-1.80,+2.37]$ + $\beta^{\mathrm{rotation}}\in[-0.88,+1.07]$），$\varphi_m^{\mathrm{place}}\in[1.49,8.10]$；$\mathrm{kill\_slope}$ 与 $\beta_p^{\mathrm{place}}$ 的相关系数 $+0.125$（两通道分离度高）。
+> **实测值域**：$\beta_p^{\mathrm{place}}\in[-1.53,+3.05]$（= $\beta^{\mathrm{terrain}}\in[-1.80,+2.37]$ + $\beta^{\mathrm{rotation}}\in[-0.88,+1.07]$），$\varphi_m^{\mathrm{place}}\in[1.49,8.10]$；$\mathrm{kill\\_slope}$ 与 $\beta_p^{\mathrm{place}}$ 的相关系数 $+0.125$（两通道分离度高）。
 
 > **为什么 φ 现在还留着（数据瓶颈 → 长期方向）**：φ 的「圈 + 相对位置」本质上是个**暂时、粗略的代理**——真正决定点位价值的应是「点位之间的连通性」（从这点能转到哪些点、那些点又值多少）。要做**点对点转点迭代**（在 $451\times451$ 的转移矩阵 $P(p'|p)$ 上跑 Bellman），需要每个点对都有足够转移样本；而 59 场只有约 2638 个 stay 段，点对点转移极稀疏（绝大多数点对从未观测到转移），硬算只会是噪声。所以当前折成两层：**β_rotation 先在 85 个粗块上做连通性前瞻递归**（把样本聚合到粗块、转移才勉强稳），φ 继续兜住「圈缩」这条跨场可统计的宏观通道。**长期方向**：数据量上去（几十上百场、点对点转移密度达标）后，把粗块递归细化到**点位级连通性迭代**
 
